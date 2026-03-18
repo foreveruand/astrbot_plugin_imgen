@@ -6,8 +6,9 @@
 
 - **/task**: 基于指定人格的无记忆对话。
 - **/img**: 开启会话式图像生成，支持文本描述和多张图片输入。
-- **图像生成**: 支持 OpenAI (DALL-E), Gemini (Imagen), Grok 模型。
-- **会话管理**: 支持 5 分钟自动超时，支持 `/generate` 生成或 `/cancel` 取消。
+- **图像生成**: 支持 OpenAI, Gemini, Grok 模型。
+- **多轮编辑**: 支持基于已生成图像进行二次编辑。
+- **会话管理**: 支持 5 分钟自动超时，支持 `/generate` 生成，`/clear` 清除记录，或 `/cancel` 取消。
 
 ## 安装
 
@@ -15,17 +16,34 @@
 
 ## 配置指南
 
-在插件设置中，请确保配置以下核心参数：
+在插件设置中，请根据您的提供商配置以下参数：
 
-- **api_key**: 图像生成 API 的密钥（必填）。
-- **api_url**: API 基础地址（选填，默认为 OpenAI API）。
+### 通用配置
 - **default_provider**: 默认生成服务，可选 `openai`, `gemini`, `grok`。
-- **default_model**: 生成模型名称。
 - **default_size**: 图片分辨率（例如 `1024x1024`）。
 - **session_timeout**: 会话超时时间，默认 300 秒。
 - **max_images**: 单次会话支持的最大输入图片数。
+- **enable_multi_turn**: 是否启用多轮编辑（默认启用）。
+- **default_persona**: 默认人格。
 
-此外，可在 `openai_settings`, `gemini_settings`, `grok_settings` 中配置特定供应商的详细参数。
+### OpenAI 配置
+- **openai_api_key**: 必填。
+- **openai_api_url**: API 基础地址，默认为 `https://api.openai.com`。
+- **openai_model**: 图像生成模型，默认为 `gpt-image-1`。
+- **openai_quality**: 图像质量 (`low`, `medium`, `high`, `auto`)。
+- **openai_background**: 图像背景 (`transparent`, `opaque`, `auto`)。
+- **openai_output_format**: 输出格式 (`png`, `jpeg`, `webp`)。
+
+### Gemini 配置
+- **gemini_api_key**: 必填。
+- **gemini_model**: 生成模型，默认为 `imagen-3.0-generate-002`。
+- **gemini_aspect_ratio**: 宽高比 (`1:1`, `16:9`, `9:16`, `4:3`, `3:4`)。
+
+### Grok 配置
+- **grok_api_key**: 必填。
+- **grok_model**: 生成模型，默认为 `grok-imagine-1.0`。
+- **grok_aspect_ratio**: 宽高比 (`1:1`, `16:9`, `9:16`, `4:3`, `3:4`)。
+- **grok_resolution**: 图片分辨率。
 
 ## 使用说明
 
@@ -41,21 +59,22 @@
 - **/img [初始描述]**: 开始绘图会话。
 - 发送图片或文字以补充描述。
 - **/generate**: 发送此命令开始生成图像。
+- **/clear**: 清除多轮编辑历史。
 - **/cancel**: 取消当前会话。
 
-*示例流程:*
+### 3. 多轮编辑流程
 1. 用户输入: `/img 一只在森林里的猫`
-2. 机器人回复: `已开始，请输入更多描述或发送图片。`
-3. 用户发送一张猫的参考图。
-4. 用户输入: `/generate`
-5. 机器人回复: `✅ 图像生成成功！` 并发送生成的图片。
+2. 用户输入: `/generate` → 生成并存储猫的图片。
+3. 用户输入: `/img 给猫加上帽子`
+4. 用户输入: `/generate` → 对上一张图进行编辑（加上帽子）。
+5. 用户输入: `/clear` → 重置历史，下一次 `/generate` 将生成全新图片。
 
 ## 支持的 API 服务
 
 本插件已支持以下服务：
-- OpenAI (DALL-E 3)
-- Google Gemini (Imagen 3)
-- Grok
+- OpenAI: `gpt-image-1`
+- Google Gemini: `imagen-3.0-generate-002` (使用 `google-genai` SDK)
+- Grok: `grok-imagine-1.0` (使用 `xai-sdk`)
 
 ## 常见问题
 
