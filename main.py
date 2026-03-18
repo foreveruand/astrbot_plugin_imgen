@@ -449,7 +449,7 @@ class Main(star.Star):
         # Add persona prompt if configured
         default_persona = self.config.get("default_persona", "")
         if default_persona:
-            persona = self.context.persona_manager.get_persona(default_persona)
+            persona = await self.context.persona_manager.get_persona(default_persona)
             if persona and hasattr(persona, "system_prompt") and persona.system_prompt:
                 prompt = (
                     f"{persona.system_prompt}\n\n{prompt}"
@@ -687,11 +687,11 @@ class Main(star.Star):
 
         # Get persona
         persona_mgr = self.context.persona_manager
-        persona = persona_mgr.get_persona(persona_name)
+        persona = await persona_mgr.get_persona(persona_name)
 
         if not persona:
             # List available personas
-            all_personas = persona_mgr.get_all_personas()
+            all_personas = await persona_mgr.get_all_personas()
             persona_list = (
                 "\n".join([f"  - {p.id}" for p in all_personas])
                 if all_personas
