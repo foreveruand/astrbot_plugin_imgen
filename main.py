@@ -413,7 +413,12 @@ class Main(star.Star):
         logger.debug(f"Cleared last image for chat {chat_id}")
 
     async def _do_generate(
-        self, event: AstrMessageEvent, chat_id: str, session_data: dict
+        self,
+        event: AstrMessageEvent,
+        chat_id: str,
+        session_data: dict,
+        size: str | None = None,
+        n: int = 1,
     ) -> bool:
         """Execute image generation. Returns True on success."""
         prompt = session_data.get("text", "")
@@ -458,7 +463,7 @@ class Main(star.Star):
                 )
 
         try:
-            size = self.config.get("default_size", "1024x1024")
+            image_size = size or self.config.get("default_size", "1024x1024")
 
             # Get provider-specific model
             model_map = {
@@ -469,7 +474,7 @@ class Main(star.Star):
             model = model_map.get(provider, "")
 
             # Get provider-specific settings
-            aspect_ratio = convert_size_to_aspect_ratio(size)
+            aspect_ratio = convert_size_to_aspect_ratio(image_size)
 
             # Multi-turn editing: check for last_image in KV storage
             enable_multi_turn = self.config.get("enable_multi_turn", True)
@@ -508,14 +513,14 @@ class Main(star.Star):
                                     mime_type = detect_mime_type(image_bytes)
                                     if provider == "gemini":
                                         result_urls = await adapter.edit(
-                                            prompt, image_bytes, mime_type, size, model=model
+                                            prompt, image_bytes, mime_type, image_size, model=model
                                         )
                                     else:  # openai
                                         quality = self.config.get("openai_quality", "auto")
                                         background = self.config.get("openai_background", "auto")
                                         output_format = self.config.get("openai_output_format", "png")
                                         result_urls = await adapter.edit(
-                                            prompt, image_bytes, mime_type, size,
+                                            prompt, image_bytes, mime_type, image_size,
                                             quality=quality, background=background,
                                             output_format=output_format,
                                         )
@@ -527,7 +532,7 @@ class Main(star.Star):
                     mime_type = stored_mime
                     if provider == "gemini":
                         result_urls = await adapter.edit(
-                            prompt, image_bytes, mime_type, size, model=model
+                            prompt, image_bytes, mime_type, image_size, model=model
                         )
                     elif provider == "grok":
                         # Grok needs URL, convert base64 to data URL
@@ -541,7 +546,7 @@ class Main(star.Star):
                         background = self.config.get("openai_background", "auto")
                         output_format = self.config.get("openai_output_format", "png")
                         result_urls = await adapter.edit(
-                            prompt, image_bytes, mime_type, size,
+                            prompt, image_bytes, mime_type, image_size,
                             quality=quality, background=background,
                             output_format=output_format,
                         )
@@ -555,7 +560,7 @@ class Main(star.Star):
                         mime_type = detect_mime_type(image_bytes)
                         if provider == "gemini":
                             result_urls = await adapter.edit(
-                                prompt, image_bytes, mime_type, size, model=model
+                                prompt, image_bytes, mime_type, image_size, model=model
                             )
                         elif provider == "grok":
                             # Grok needs image URL for editing
@@ -575,7 +580,7 @@ class Main(star.Star):
                                 prompt,
                                 image_bytes,
                                 mime_type,
-                                size,
+                                image_size,
                                 quality=quality,
                                 background=background,
                                 output_format=output_format,
@@ -583,7 +588,7 @@ class Main(star.Star):
                     else:
                         if provider == "gemini":
                             result_urls = await adapter.generate(
-                                prompt, size, model=model
+                                prompt, image_size, model=model
                             )
                         elif provider == "grok":
                             result_urls = await adapter.generate(
@@ -597,14 +602,14 @@ class Main(star.Star):
                             )
                             result_urls = await adapter.generate(
                                 prompt,
-                                size,
+                                image_size,
                                 quality=quality,
                                 background=background,
                                 output_format=output_format,
                             )
                 else:
                     if provider == "gemini":
-                        result_urls = await adapter.generate(prompt, size, model=model)
+                        result_urls = await adapter.generate(prompt, image_size, model=model)
                     elif provider == "grok":
                         result_urls = await adapter.generate(
                             prompt, model=model, aspect_ratio=aspect_ratio
@@ -615,7 +620,7 @@ class Main(star.Star):
                         output_format = self.config.get("openai_output_format", "png")
                         result_urls = await adapter.generate(
                             prompt,
-                            size,
+                            image_size,
                             quality=quality,
                             background=background,
                             output_format=output_format,
@@ -623,7 +628,7 @@ class Main(star.Star):
             else:
                 # Text-to-image
                 if provider == "gemini":
-                    result_urls = await adapter.generate(prompt, size, model=model)
+                    result_urls = await adapter.generate(prompt, image_size, model=model)
                 elif provider == "grok":
                     result_urls = await adapter.generate(
                         prompt, model=model, aspect_ratio=aspect_ratio
@@ -634,7 +639,7 @@ class Main(star.Star):
                     output_format = self.config.get("openai_output_format", "png")
                     result_urls = await adapter.generate(
                         prompt,
-                        size,
+                        image_size,
                         quality=quality,
                         background=background,
                         output_format=output_format,
@@ -767,8 +772,20 @@ class Main(star.Star):
             # Note: wake_prefix (/) has been stripped by AstrBot pipeline
             msg_str = event.message_str.strip().lower()
 
-            if msg_str == "generate":
-                await self._do_generate(event, chat_id, session_data)
+            if msg_str.startswith("generate"):
+                # Parse optional arguments: generate [n] [size]
+                # e.g., "generate 2 1024x1024" or "generate 1024x1024" or "generate 2"
+                parts = msg_str.split()
+                gen_n = 1
+                gen_size = None
+
+                for part in parts[1:]:  # Skip "generate" itself
+                    if part.isdigit():
+                        gen_n = int(part)
+                    elif "x" in part:  # Size format like "1024x1024"
+                        gen_size = part
+
+                await self._do_generate(event, chat_id, session_data, size=gen_size, n=gen_n)
                 if chat_id in self.ACTIVE_SESSIONS:
                     del self.ACTIVE_SESSIONS[chat_id]
                 controller.stop()
