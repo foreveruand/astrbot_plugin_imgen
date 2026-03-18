@@ -3,6 +3,7 @@ AstrBot Image Generation Plugin - Persona-based chat and image generation.
 """
 
 import base64
+import time
 import uuid
 
 import aiohttp
@@ -80,7 +81,14 @@ ERROR_MESSAGES = {
     "unsupported_format": "不支持的图片格式，仅支持 PNG、JPEG、WEBP、GIF。",
     "session_conflict": "当前会话已有正在进行的绘图任务，请先使用 /cancel 取消。",
     "generation_success": "✅ 图像生成成功！",
+    "multi_turn_cleared": "✅ 已清除多轮编辑历史，可以开始新的创作。",
+    "no_multi_turn_history": "当前没有多轮编辑历史。",
 }
+
+
+def _get_kv_key(chat_id: str) -> str:
+    """Generate KV storage key for multi-turn image session."""
+    return f"img_session_{chat_id}"
 
 
 class ChatFilter(SessionFilter):
@@ -364,6 +372,46 @@ class Main(star.Star):
         else:
             raise ValueError(f"Unknown provider: {provider}")
 
+    async def _store_last_image(
+        self,
+        chat_id: str,
+        image_data: str,
+        provider: str,
+        model: str,
+        prompt: str,
+        is_url: bool = False,
+        mime_type: str = "image/png",
+    ) -> None:
+        """Store last generated image to KV storage for multi-turn editing."""
+        key = _get_kv_key(chat_id)
+        kv_data = await self.get_kv_data(key, None) or {
+            "prompt_history": [],
+        }
+
+        # Update stored data
+        kv_data["last_image"] = image_data
+        kv_data["last_image_is_url"] = is_url
+        kv_data["last_image_mime"] = mime_type
+        kv_data["provider"] = provider
+        kv_data["model"] = model
+        kv_data["prompt_history"].append(prompt)
+        kv_data["timestamp"] = int(time.time())
+
+        await self.put_kv_data(key, kv_data)
+        logger.debug(f"Stored last image for chat {chat_id}")
+
+    async def _get_last_image(self, chat_id: str) -> dict | None:
+        """Retrieve last generated image from KV storage."""
+        key = _get_kv_key(chat_id)
+        data = await self.get_kv_data(key, None)
+        return data
+
+    async def _clear_last_image(self, chat_id: str) -> None:
+        """Clear multi-turn editing history from KV storage."""
+        key = _get_kv_key(chat_id)
+        await self.delete_kv_data(key)
+        logger.debug(f"Cleared last image for chat {chat_id}")
+
     async def _do_generate(
         self, event: AstrMessageEvent, chat_id: str, session_data: dict
     ) -> bool:
@@ -423,7 +471,81 @@ class Main(star.Star):
             # Get provider-specific settings
             aspect_ratio = convert_size_to_aspect_ratio(size)
 
-            if images:
+            # Multi-turn editing: check for last_image in KV storage
+            enable_multi_turn = self.config.get("enable_multi_turn", True)
+            last_image_data = None
+            if enable_multi_turn and not images:
+                last_image_data = await self._get_last_image(chat_id)
+
+            # Determine if we should use multi-turn editing
+            use_multi_turn_edit = (
+                enable_multi_turn
+                and last_image_data is not None
+                and last_image_data.get("last_image")
+                and not images  # Don't use multi-turn if user provided new images
+            )
+
+            if use_multi_turn_edit:
+                # Multi-turn editing using stored last_image
+                stored_image = last_image_data["last_image"]
+                is_url = last_image_data.get("last_image_is_url", False)
+                stored_mime = last_image_data.get("last_image_mime", "image/png")
+
+                logger.info(f"Using multi-turn editing for chat {chat_id}")
+
+                if is_url:
+                    # URL-based (Grok)
+                    if provider == "grok":
+                        result_urls = await adapter.edit(
+                            prompt, image_url=stored_image, model=model
+                        )
+                    else:
+                        # For non-Grok providers with URL, download and convert
+                        async with aiohttp.ClientSession() as session:
+                            async with session.get(stored_image) as resp:
+                                if resp.status == 200:
+                                    image_bytes = await resp.read()
+                                    mime_type = detect_mime_type(image_bytes)
+                                    if provider == "gemini":
+                                        result_urls = await adapter.edit(
+                                            prompt, image_bytes, mime_type, size, model=model
+                                        )
+                                    else:  # openai
+                                        quality = self.config.get("openai_quality", "auto")
+                                        background = self.config.get("openai_background", "auto")
+                                        output_format = self.config.get("openai_output_format", "png")
+                                        result_urls = await adapter.edit(
+                                            prompt, image_bytes, mime_type, size,
+                                            quality=quality, background=background,
+                                            output_format=output_format,
+                                        )
+                                else:
+                                    raise Exception(f"Failed to download stored image: {resp.status}")
+                else:
+                    # Base64-based (OpenAI, Gemini)
+                    image_bytes = base64.b64decode(stored_image)
+                    mime_type = stored_mime
+                    if provider == "gemini":
+                        result_urls = await adapter.edit(
+                            prompt, image_bytes, mime_type, size, model=model
+                        )
+                    elif provider == "grok":
+                        # Grok needs URL, convert base64 to data URL
+                        b64_str = stored_image
+                        data_url = f"data:{mime_type};base64,{b64_str}"
+                        result_urls = await adapter.edit(
+                            prompt, image_url=data_url, model=model
+                        )
+                    else:  # openai
+                        quality = self.config.get("openai_quality", "auto")
+                        background = self.config.get("openai_background", "auto")
+                        output_format = self.config.get("openai_output_format", "png")
+                        result_urls = await adapter.edit(
+                            prompt, image_bytes, mime_type, size,
+                            quality=quality, background=background,
+                            output_format=output_format,
+                        )
+            elif images:
                 # Image-to-image
                 img_comp = images[0]
                 if hasattr(img_comp, "convert_to_base64"):
@@ -519,11 +641,25 @@ class Main(star.Star):
                     )
 
             # Send results
+            first_result = result_urls[0] if result_urls else None
             for url in result_urls:
                 if url.startswith("http"):
                     await event.send(event.image_result(url))
                 else:
                     await event.send(event.image_result(f"data:image/png;base64,{url}"))
+
+            # Store result for multi-turn editing if enabled
+            if enable_multi_turn and first_result:
+                is_url = first_result.startswith("http")
+                await self._store_last_image(
+                    chat_id=chat_id,
+                    image_data=first_result if is_url else first_result,
+                    provider=provider,
+                    model=model,
+                    prompt=prompt,
+                    is_url=is_url,
+                    mime_type="image/png",
+                )
 
             await event.send(event.plain_result(ERROR_MESSAGES["generation_success"]))
             return True
@@ -638,6 +774,7 @@ class Main(star.Star):
                 return
 
             if msg_str == "/cancel":
+                await self._clear_last_image(chat_id)
                 await event.send(event.plain_result("已取消绘图会话。"))
                 if chat_id in self.ACTIVE_SESSIONS:
                     del self.ACTIVE_SESSIONS[chat_id]
@@ -673,6 +810,8 @@ class Main(star.Star):
         try:
             await img_waiter(event, session_filter=ChatFilter())
         except TimeoutError:
+            # Clear KV storage on timeout
+            await self._clear_last_image(chat_id)
             yield event.plain_result("⏰ 绘图会话已超时，请重新开始。")
         finally:
             if chat_id in self.ACTIVE_SESSIONS:
@@ -685,8 +824,23 @@ class Main(star.Star):
         chat_id = (
             event.get_group_id() if event.get_group_id() else event.unified_msg_origin
         )
+        # Clear KV storage for multi-turn editing
+        await self._clear_last_image(chat_id)
         if chat_id in self.ACTIVE_SESSIONS:
             del self.ACTIVE_SESSIONS[chat_id]
             yield event.plain_result("已取消绘图会话。")
         else:
             yield event.plain_result("当前没有正在进行的绘图会话。")
+
+    @filter.command("clear")
+    async def clear_cmd(self, event: AstrMessageEvent):
+        """清除多轮编辑历史，保留当前绘图会话。"""
+        chat_id = (
+            event.get_group_id() if event.get_group_id() else event.unified_msg_origin
+        )
+        last_image_data = await self._get_last_image(chat_id)
+        if last_image_data and last_image_data.get("last_image"):
+            await self._clear_last_image(chat_id)
+            yield event.plain_result(ERROR_MESSAGES["multi_turn_cleared"])
+        else:
+            yield event.plain_result(ERROR_MESSAGES["no_multi_turn_history"])
