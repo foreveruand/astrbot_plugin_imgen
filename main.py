@@ -764,21 +764,32 @@ class Main(star.Star):
                 return
 
             # Check for generate/cancel commands
+            # Note: wake_prefix (/) has been stripped by AstrBot pipeline
             msg_str = event.message_str.strip().lower()
 
-            if msg_str == "/generate":
+            if msg_str == "generate":
                 await self._do_generate(event, chat_id, session_data)
                 if chat_id in self.ACTIVE_SESSIONS:
                     del self.ACTIVE_SESSIONS[chat_id]
                 controller.stop()
                 return
 
-            if msg_str == "/cancel":
+            if msg_str == "cancel":
                 await self._clear_last_image(chat_id)
                 await event.send(event.plain_result("已取消绘图会话。"))
                 if chat_id in self.ACTIVE_SESSIONS:
                     del self.ACTIVE_SESSIONS[chat_id]
                 controller.stop()
+                return
+
+            if msg_str == "clear":
+                last_image_data = await self._get_last_image(chat_id)
+                if last_image_data and last_image_data.get("last_image"):
+                    await self._clear_last_image(chat_id)
+                    await event.send(event.plain_result(ERROR_MESSAGES["multi_turn_cleared"]))
+                else:
+                    await event.send(event.plain_result(ERROR_MESSAGES["no_multi_turn_history"]))
+                controller.keep(timeout=self.config.get("session_timeout", 300))
                 return
 
             # Collect text
