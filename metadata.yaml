@@ -1,5 +1,5 @@
 name: astrbot_plugin_imgen
 display_name: 图像生成助手
-desc: "支持人格对话和图像生成，提供 /task 和 /img 命令"
-version: 1.0.0
+desc: "支持人格对话和多轮图像编辑，提供 /task 和 /img 命令。集成 OpenAI、Gemini、Grok 三大官方 SDK，支持会话式图像生成与编辑。"
+version: 1.1.0
 author: YourName
