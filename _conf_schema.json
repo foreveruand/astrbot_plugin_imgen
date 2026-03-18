@@ -53,21 +53,28 @@
         "description": "OpenAI 模型",
         "hint": "OpenAI 图像生成模型",
         "type": "string",
-        "default": "dall-e-3"
+        "default": "gpt-image-1"
     },
     "openai_quality": {
         "description": "OpenAI 图像质量",
         "hint": "图像质量设置",
         "type": "string",
-        "default": "standard",
-        "options": ["standard", "hd"]
+        "default": "auto",
+        "options": ["low", "medium", "high", "auto"]
     },
-    "openai_style": {
-        "description": "OpenAI 图像风格",
-        "hint": "图像风格设置",
+    "openai_background": {
+        "description": "OpenAI 图像背景",
+        "hint": "图像背景设置（透明背景仅 PNG 格式）",
         "type": "string",
-        "default": "vivid",
-        "options": ["vivid", "natural"]
+        "default": "auto",
+        "options": ["transparent", "opaque", "auto"]
+    },
+    "openai_output_format": {
+        "description": "OpenAI 输出格式",
+        "hint": "图像输出格式",
+        "type": "string",
+        "default": "png",
+        "options": ["png", "jpeg", "webp"]
     },
     "gemini_api_key": {
         "description": "Gemini API 密钥",
