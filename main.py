@@ -7,6 +7,7 @@ import time
 import uuid
 
 import aiohttp
+import mcp.types
 import xai_sdk
 from google import genai
 from google.genai import types
@@ -1017,20 +1018,49 @@ class Main(star.Star):
             if not result_urls:
                 return "图像生成失败：未返回结果。"
 
-            # Send the image to the chat
             first_url = result_urls[0]
-            if first_url.startswith("http"):
-                await event.send(event.image_result(first_url))
-            else:
-                await event.send(event.image_result(f"data:image/png;base64,{first_url}"))
-
-            # Return result for LLM
             result_count = len(result_urls)
             action = "编辑" if is_editing else "生成"
-            if result_count == 1:
-                return f"已成功{action} 1 张图像。图像已发送到聊天中。"
+
+            # Determine MIME type and base64 data
+            if first_url.startswith("http"):
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(first_url) as resp:
+                        if resp.status != 200:
+                            return f"图像{action}成功，但无法获取图片数据。"
+                        image_bytes = await resp.read()
+                        image_b64 = base64.b64encode(image_bytes).decode("utf-8")
+                        mime_type = detect_mime_type(image_bytes)
+                # Send to user
+                await event.send(event.image_result(first_url))
+            elif first_url.startswith("data:"):
+                import re
+                match = re.match(r"data:image/(\w+);base64,(.+)", first_url)
+                if match:
+                    mime_type = f"image/{match.group(1)}"
+                    image_b64 = match.group(2)
+                else:
+                    mime_type = "image/png"
+                    image_b64 = first_url
+                # Send to user
+                await event.send(event.image_result(first_url))
             else:
-                return f"已成功{action} {result_count} 张图像。图像已发送到聊天中。"
+                mime_type = "image/png"
+                image_b64 = first_url
+                # Send to user
+                await event.send(event.image_result(f"data:image/png;base64,{first_url}"))
+
+            # Return ImageContent so LLM can see the generated image
+            # This allows the LLM to evaluate the result
+            return mcp.types.CallToolResult(
+                content=[
+                    mcp.types.ImageContent(
+                        type="image",
+                        data=image_b64,
+                        mimeType=mime_type,
+                    )
+                ]
+            )
 
         except Exception as e:
             logger.error(f"Image generation tool error: {e}")
