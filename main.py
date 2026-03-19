@@ -918,24 +918,20 @@ class Main(star.Star):
         self,
         event: AstrMessageEvent,
         prompt: str,
-        provider: str = "openai",
+        image_url: str = "",
         size: str = "1024x1024",
     ) -> str:
-        '''生成图像。当用户请求生成图片、画图、创建图像时使用此工具。
+        '''生成或编辑图像。当用户请求生成图片、画图、创建图像或编辑图片时使用此工具。
 
         Args:
             prompt(string): 图像生成的详细描述，描述要生成的图像内容。
-            provider(string): 图像生成提供商，可选 openai、gemini、grok。默认为 openai。
+            image_url(string): 可选。要编辑的图片URL。如果提供，将对图片进行编辑；否则生成新图片。
             size(string): 图像尺寸，如 1024x1024、1792x1024、1024x1792。默认为 1024x1024。
         '''
-        logger.info(f"generate_image_tool called: prompt={prompt}, provider={provider}, size={size}")
+        logger.info(f"generate_image_tool called: prompt={prompt}, image_url={image_url[:50] if image_url else 'None'}, size={size}")
 
-        # Validate provider
-        valid_providers = ["openai", "gemini", "grok"]
-        if provider.lower() not in valid_providers:
-            return f"错误：无效的提供商 '{provider}'。支持的提供商：{', '.join(valid_providers)}"
-
-        provider = provider.lower()
+        # Use default provider from config
+        provider = self.config.get("default_provider", "openai")
 
         # Check API key for the provider
         api_key_map = {
@@ -961,18 +957,62 @@ class Main(star.Star):
             model = model_map.get(provider, "")
             aspect_ratio = convert_size_to_aspect_ratio(size)
 
-            # Generate image
-            if provider == "gemini":
-                result_urls = await adapter.generate(prompt, size, model=model)
-            elif provider == "grok":
-                result_urls = await adapter.generate(prompt, model=model, aspect_ratio=aspect_ratio)
-            else:  # openai
-                quality = self.config.get("openai_quality", "auto")
-                background = self.config.get("openai_background", "auto")
-                output_format = self.config.get("openai_output_format", "png")
-                result_urls = await adapter.generate(
-                    prompt, size, quality=quality, background=background, output_format=output_format
-                )
+            # Check if we're doing image-to-image (editing) or text-to-image
+            is_editing = bool(image_url and image_url.strip())
+            
+            if is_editing:
+                # Image-to-image editing
+                logger.info(f"Performing image-to-image editing for provider {provider}")
+                
+                if provider == "grok":
+                    # Grok uses URL directly
+                    result_urls = await adapter.edit(prompt, image_url=image_url, model=model)
+                else:
+                    # OpenAI and Gemini need bytes - download the image
+                    if image_url.startswith("data:"):
+                        # Base64 data URL
+                        # Format: data:image/png;base64,<base64_data>
+                        import re
+                        match = re.match(r"data:image/(\w+);base64,(.+)", image_url)
+                        if match:
+                            mime_type = f"image/{match.group(1)}"
+                            image_bytes = base64.b64decode(match.group(2))
+                        else:
+                            return "错误：无效的 base64 图片格式。"
+                    else:
+                        # HTTP URL - download the image
+                        async with aiohttp.ClientSession() as session:
+                            async with session.get(image_url) as resp:
+                                if resp.status != 200:
+                                    return f"错误：无法下载图片，状态码 {resp.status}。"
+                                image_bytes = await resp.read()
+                                mime_type = detect_mime_type(image_bytes)
+                    
+                    if provider == "gemini":
+                        result_urls = await adapter.edit(prompt, image_bytes, mime_type, size, model=model)
+                    else:  # openai
+                        quality = self.config.get("openai_quality", "auto")
+                        background = self.config.get("openai_background", "auto")
+                        output_format = self.config.get("openai_output_format", "png")
+                        result_urls = await adapter.edit(
+                            prompt, image_bytes, mime_type, size,
+                            quality=quality, background=background, output_format=output_format
+                        )
+            else:
+                # Text-to-image generation
+                logger.info(f"Performing text-to-image generation for provider {provider}")
+                
+                if provider == "gemini":
+                    result_urls = await adapter.generate(prompt, size, model=model)
+                elif provider == "grok":
+                    result_urls = await adapter.generate(prompt, model=model, aspect_ratio=aspect_ratio)
+                else:  # openai
+                    quality = self.config.get("openai_quality", "auto")
+                    background = self.config.get("openai_background", "auto")
+                    output_format = self.config.get("openai_output_format", "png")
+                    result_urls = await adapter.generate(
+                        prompt, size, quality=quality, background=background, output_format=output_format
+                    )
 
             if not result_urls:
                 return "图像生成失败：未返回结果。"
@@ -986,10 +1026,11 @@ class Main(star.Star):
 
             # Return result for LLM
             result_count = len(result_urls)
+            action = "编辑" if is_editing else "生成"
             if result_count == 1:
-                return f"已成功生成 1 张图像。图像已发送到聊天中。"
+                return f"已成功{action} 1 张图像。图像已发送到聊天中。"
             else:
-                return f"已成功生成 {result_count} 张图像。图像已发送到聊天中。"
+                return f"已成功{action} {result_count} 张图像。图像已发送到聊天中。"
 
         except Exception as e:
             logger.error(f"Image generation tool error: {e}")

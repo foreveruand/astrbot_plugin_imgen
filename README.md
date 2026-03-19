@@ -7,7 +7,9 @@
 - **/task**: 基于指定人格的无记忆对话。
 - **/img**: 开启会话式图像生成，支持文本描述和多张图片输入。
 - **图像生成**: 支持 OpenAI, Gemini, Grok 模型。
+- **Vertex AI**: 支持 Google Cloud Vertex AI 认证。
 - **多轮编辑**: 支持基于已生成图像进行二次编辑。
+- **LLM 工具**: 可作为 AI 工具调用，让 AI 在对话中生成图像。
 - **会话管理**: 支持 5 分钟自动超时，支持 `/generate` 生成，`/clear` 清除记录，或 `/cancel` 取消。
 
 ## 安装
@@ -35,9 +37,15 @@
 - **openai_output_format**: 输出格式 (`png`, `jpeg`, `webp`)。
 
 ### Gemini 配置
-- **gemini_api_key**: 必填。
+- **gemini_api_key**: 必填（未启用 Vertex AI 时）。
 - **gemini_model**: 生成模型，默认为 `imagen-3.0-generate-002`。
 - **gemini_aspect_ratio**: 宽高比 (`1:1`, `16:9`, `9:16`, `4:3`, `3:4`)。
+
+#### Vertex AI 配置（可选）
+- **gemini_vertex_enabled**: 启用 Vertex AI。
+- **gemini_vertex_credentials**: 服务账号 JSON 凭证文件。
+- **gemini_vertex_project**: Google Cloud 项目 ID。
+- **gemini_vertex_location**: Vertex AI 区域（默认 `us-central1`）。
 
 ### Grok 配置
 - **grok_api_key**: 必填。
@@ -74,6 +82,18 @@
 3. 用户输入: `/img 给猫加上帽子`
 4. 用户输入: `generate` → 对上一张图进行编辑（加上帽子）。
 5. 用户输入: `clear` → 重置历史，下一次 `generate` 将生成全新图片。
+
+### 4. LLM 工具调用
+本插件提供 `generate_image` 工具，AI 可以在对话中自动调用：
+- **文生图**: AI 直接根据用户描述生成图片
+- **图生图**: AI 可以编辑用户发送的图片
+
+工具参数：
+- `prompt` (必填): 图像描述
+- `image_url` (可选): 要编辑的图片 URL，提供时进行图生图
+- `size` (可选): 图像尺寸，默认 1024x1024
+
+使用默认提供商配置，无需在工具中指定提供商。
 
 ## 支持的 API 服务
 

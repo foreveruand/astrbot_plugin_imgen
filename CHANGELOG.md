@@ -14,9 +14,11 @@ All notable changes to this project will be documented in this file.
 
 - **LLM Tool Integration**:
   - Add `generate_image` tool exposed via `@filter.llm_tool` decorator
-  - Allows AI to generate images during conversations
-  - Supports `prompt`, `provider`, and `size` parameters
+  - Allows AI to generate or edit images during conversations
+  - Supports `prompt`, `image_url` (optional), and `size` parameters
   - Works with all three providers: OpenAI, Gemini, Grok
+  - Uses default provider from config (no need to specify provider)
+  - Supports both text-to-image and image-to-image editing
 
 ### Changed
 
