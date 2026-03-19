@@ -912,3 +912,85 @@ class Main(star.Star):
             yield event.plain_result(ERROR_MESSAGES["multi_turn_cleared"])
         else:
             yield event.plain_result(ERROR_MESSAGES["no_multi_turn_history"])
+
+    @filter.llm_tool(name="generate_image")
+    async def generate_image_tool(
+        self,
+        event: AstrMessageEvent,
+        prompt: str,
+        provider: str = "openai",
+        size: str = "1024x1024",
+    ) -> str:
+        '''生成图像。当用户请求生成图片、画图、创建图像时使用此工具。
+
+        Args:
+            prompt(string): 图像生成的详细描述，描述要生成的图像内容。
+            provider(string): 图像生成提供商，可选 openai、gemini、grok。默认为 openai。
+            size(string): 图像尺寸，如 1024x1024、1792x1024、1024x1792。默认为 1024x1024。
+        '''
+        logger.info(f"generate_image_tool called: prompt={prompt}, provider={provider}, size={size}")
+
+        # Validate provider
+        valid_providers = ["openai", "gemini", "grok"]
+        if provider.lower() not in valid_providers:
+            return f"错误：无效的提供商 '{provider}'。支持的提供商：{', '.join(valid_providers)}"
+
+        provider = provider.lower()
+
+        # Check API key for the provider
+        api_key_map = {
+            "openai": ("openai_api_key", "api_key"),
+            "gemini": ("gemini_api_key", "api_key"),
+            "grok": ("grok_api_key", "api_key"),
+        }
+        primary_key, fallback_key = api_key_map.get(provider, ("api_key", "api_key"))
+        if not (self.config.get(primary_key) or self.config.get(fallback_key)):
+            return f"错误：未配置 {provider} 的 API 密钥，请在插件设置中配置。"
+
+        try:
+            adapter = self._get_adapter(provider)
+        except ValueError as e:
+            return f"错误：{str(e)}"
+
+        try:
+            model_map = {
+                "openai": self.config.get("openai_model", "gpt-image-1"),
+                "gemini": self.config.get("gemini_model", "imagen-3.0-generate-002"),
+                "grok": self.config.get("grok_model", "grok-imagine-1.0"),
+            }
+            model = model_map.get(provider, "")
+            aspect_ratio = convert_size_to_aspect_ratio(size)
+
+            # Generate image
+            if provider == "gemini":
+                result_urls = await adapter.generate(prompt, size, model=model)
+            elif provider == "grok":
+                result_urls = await adapter.generate(prompt, model=model, aspect_ratio=aspect_ratio)
+            else:  # openai
+                quality = self.config.get("openai_quality", "auto")
+                background = self.config.get("openai_background", "auto")
+                output_format = self.config.get("openai_output_format", "png")
+                result_urls = await adapter.generate(
+                    prompt, size, quality=quality, background=background, output_format=output_format
+                )
+
+            if not result_urls:
+                return "图像生成失败：未返回结果。"
+
+            # Send the image to the chat
+            first_url = result_urls[0]
+            if first_url.startswith("http"):
+                await event.send(event.image_result(first_url))
+            else:
+                await event.send(event.image_result(f"data:image/png;base64,{first_url}"))
+
+            # Return result for LLM
+            result_count = len(result_urls)
+            if result_count == 1:
+                return f"已成功生成 1 张图像。图像已发送到聊天中。"
+            else:
+                return f"已成功生成 {result_count} 张图像。图像已发送到聊天中。"
+
+        except Exception as e:
+            logger.error(f"Image generation tool error: {e}")
+            return f"图像生成失败：{str(e)}"
