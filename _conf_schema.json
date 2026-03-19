@@ -95,6 +95,31 @@
         "default": "1:1",
         "options": ["1:1", "16:9", "9:16", "4:3", "3:4"]
     },
+    "gemini_vertex_enabled": {
+        "description": "启用 Vertex AI",
+        "hint": "使用 Google Cloud Vertex AI 而非 Gemini API",
+        "type": "bool",
+        "default": false
+    },
+    "gemini_vertex_credentials": {
+        "description": "Vertex AI 服务账号 JSON 文件",
+        "hint": "上传 Google Cloud 服务账号 JSON 凭证文件",
+        "type": "file",
+        "default": [],
+        "file_types": ["json"]
+    },
+    "gemini_vertex_project": {
+        "description": "Vertex AI 项目 ID",
+        "hint": "Google Cloud 项目 ID",
+        "type": "string",
+        "default": ""
+    },
+    "gemini_vertex_location": {
+        "description": "Vertex AI 区域",
+        "hint": "如: us-central1, us-east1",
+        "type": "string",
+        "default": "us-central1"
+    },
     "grok_api_key": {
         "description": "Grok API 密钥",
         "hint": "Grok 图像生成 API 的密钥",

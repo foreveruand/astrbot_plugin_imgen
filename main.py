@@ -210,11 +210,40 @@ class OpenAIAdapter(ImageAdapter):
 class GeminiAdapter(ImageAdapter):
     """Gemini image generation adapter using official google-genai SDK."""
 
-    def __init__(self, api_key: str, timeout: int = 120):
+    def __init__(
+        self, api_key: str, timeout: int = 120, vertex_config: dict | None = None
+    ):
         # Note: api_url is not used for Gemini SDK - uses Google's official endpoint
         self.api_key = api_key
         self.timeout = timeout
-        self.client = genai.Client(api_key=api_key)
+        self._using_vertex = False
+
+        # Vertex AI configuration
+        if vertex_config and vertex_config.get("enabled"):
+            credentials_path = vertex_config.get("credentials_path")
+            project = vertex_config.get("project")
+            location = vertex_config.get("location", "us-central1")
+
+            if credentials_path and project:
+                # Load service account credentials
+                from google.oauth2 import service_account
+
+                credentials = service_account.Credentials.from_service_account_file(
+                    credentials_path
+                )
+                self.client = genai.Client(
+                    vertexai=True, project=project, location=location, credentials=credentials
+                )
+                self._using_vertex = True
+                logger.info(f"GeminiAdapter initialized with Vertex AI (project={project})")
+            else:
+                # Fall back to API key if Vertex AI config is incomplete
+                self.client = genai.Client(api_key=api_key)
+                logger.info("GeminiAdapter initialized with API key (Vertex AI config incomplete)")
+        else:
+            # Use API key
+            self.client = genai.Client(api_key=api_key)
+            logger.info("GeminiAdapter initialized with API key")
 
     async def generate(
         self,
@@ -365,7 +394,18 @@ class Main(star.Star):
             api_key = self.config.get("gemini_api_key") or self.config.get(
                 "api_key", ""
             )
-            return GeminiAdapter(api_key, timeout)
+            # Vertex AI configuration
+            vertex_config = None
+            if self.config.get("gemini_vertex_enabled"):
+                credentials_files = self.config.get("gemini_vertex_credentials", [])
+                credentials_path = credentials_files[0] if credentials_files else None
+                vertex_config = {
+                    "enabled": True,
+                    "credentials_path": credentials_path,
+                    "project": self.config.get("gemini_vertex_project", ""),
+                    "location": self.config.get("gemini_vertex_location", "us-central1"),
+                }
+            return GeminiAdapter(api_key, timeout, vertex_config=vertex_config)
         elif provider == "grok":
             api_key = self.config.get("grok_api_key") or self.config.get("api_key", "")
             return GrokAdapter(api_key, timeout)
