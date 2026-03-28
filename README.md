@@ -86,11 +86,15 @@
 ### 4. LLM 工具调用
 本插件提供 `generate_image` 工具，AI 可以在对话中自动调用：
 - **文生图**: AI 直接根据用户描述生成图片
-- **图生图**: AI 可以编辑用户发送的图片
+- **图生图**: AI 可以编辑用户发送的图片，支持多图输入
 
 工具参数：
 - `prompt` (必填): 图像描述
-- `image_url` (可选): 要编辑的图片 URL，提供时进行图生图
+- `images` (可选): 要编辑的图片列表（array），支持以下格式：
+  - 本地路径: `/data/images/cat.png`
+  - HTTP/HTTPS URL: `https://example.com/image.png`
+  - Base64 Data URL: `data:image/png;base64,...`
+  - 纯 Base64 字符串
 - `size` (可选): 图像尺寸，默认 1024x1024
 
 使用默认提供商配置，无需在工具中指定提供商。

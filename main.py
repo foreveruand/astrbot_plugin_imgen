@@ -1124,7 +1124,7 @@ class Main(star.Star):
 
         Args:
             prompt(string): 图像生成的详细描述，描述要生成的图像内容。
-            images(List[string]): 可选。要编辑的图片列表，支持URL、本地路径、base64。如果提供，将对图片进行编辑；否则生成新图片。
+            images(array[string]): 可选。要编辑的图片列表，支持URL、本地路径、base64。如果提供，将对图片进行编辑；否则生成新图片。
             size(string): 图像尺寸，如 1024x1024、1792x1024、1024x1792。默认为 1024x1024。
         """
         images_info = f"{len(images)} images" if images else "None"

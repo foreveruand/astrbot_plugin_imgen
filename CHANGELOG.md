@@ -2,6 +2,54 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.3.0] - 2026-03-28
+
+### Added
+
+- **Multi-Image Support for LLM Tool**:
+  - Changed `image_url` parameter to `images` (array of strings)
+  - Support for multiple image inputs in a single request
+  - Backward compatible with single image editing
+  - OpenAI and Gemini adapters now support multiple images
+  - Grok adapter uses first image (SDK limitation)
+
+- **Enhanced Image Input Format Support**:
+  - Image bytes (direct binary input)
+  - Local file paths (`/path/to/image.png`)
+  - HTTP/HTTPS URLs (`https://example.com/image.png`)
+  - Base64 data URLs (`data:image/png;base64,...`)
+  - Pure Base64 strings (without `data:` prefix)
+
+- **New `_process_image_input` Helper Method**:
+  - Automatically detects and processes various image input formats
+  - Unified handling across all adapters
+  - Error handling with detailed logging
+
+### Changed
+
+- **ImageAdapter Base Class**:
+  - Updated `edit()` method signature to support `images` parameter
+  - Maintains backward compatibility with `image_bytes` parameter
+  - New signature: `edit(prompt, image_bytes=None, mime_type=None, size=None, images=None, **kwargs)`
+
+- **OpenAIAdapter**:
+  - Updated `edit()` to support multiple images via form data
+  - Uses `image[]` field for multiple image uploads
+
+- **GeminiAdapter**:
+  - Updated `edit()` to support multiple images
+  - Builds content parts array with all images followed by text prompt
+
+- **GrokAdapter**:
+  - Updated `edit()` to accept bytes and convert to data URL internally
+  - Simplified interface, no longer requires external URL conversion
+
+### Technical Details
+
+- LLM Tool parameter type changed from `List[string]` to `array[string]` (AstrBot compatibility)
+- All adapters now accept `images: list[tuple[bytes, str]]` parameter
+- Internal conversion from URLs to bytes happens in `_process_image_input`
+
 ## [1.2.0] - 2026-03-19
 
 ### Added
