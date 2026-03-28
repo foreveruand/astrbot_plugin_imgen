@@ -116,8 +116,24 @@ class ImageAdapter:
         raise NotImplementedError
 
     async def edit(
-        self, prompt: str, image_bytes: bytes, mime_type: str, size: str = "1024x1024"
+        self,
+        prompt: str,
+        image_bytes: bytes | None = None,
+        mime_type: str = "image/png",
+        size: str = "1024x1024",
+        images: list[tuple[bytes, str]] | None = None,
+        **kwargs,
     ) -> list[str]:
+        """Edit image with optional multi-image support.
+
+        Args:
+            prompt: The edit prompt
+            image_bytes: Single image bytes (for backward compatibility)
+            mime_type: MIME type of the single image
+            size: Target image size
+            images: List of (image_bytes, mime_type) tuples for multi-image editing
+            **kwargs: Additional provider-specific parameters
+        """
         raise NotImplementedError
 
 
@@ -168,20 +184,18 @@ class OpenAIAdapter(ImageAdapter):
     async def edit(
         self,
         prompt: str,
-        image_bytes: bytes,
-        mime_type: str,
+        image_bytes: bytes | None = None,
+        mime_type: str = "image/png",
         size: str = "1024x1024",
+        images: list[tuple[bytes, str]] | None = None,
         quality: str = "auto",
         background: str = "auto",
         output_format: str = "png",
     ) -> list[str]:
-        """Edit image using gpt-image-1 model."""
+        """Edit image(s) using gpt-image-1 model. Supports multiple images."""
         url = f"{self.api_url}/v1/images/edits"
 
         form = aiohttp.FormData()
-        form.add_field(
-            "image", image_bytes, filename="image.png", content_type=mime_type
-        )
         form.add_field("prompt", prompt)
         form.add_field("model", "gpt-image-1")
         form.add_field("size", size)
@@ -189,6 +203,25 @@ class OpenAIAdapter(ImageAdapter):
         form.add_field("background", background)
         form.add_field("output_format", output_format)
         form.add_field("response_format", "url")
+
+        # Handle multi-image input
+        if images and len(images) > 0:
+            # Multiple images provided
+            for idx, (img_bytes, img_mime) in enumerate(images):
+                filename = (
+                    f"image_{idx}.png"
+                    if img_mime == "image/png"
+                    else f"image_{idx}.jpg"
+                )
+                form.add_field(
+                    "image[]", img_bytes, filename=filename, content_type=img_mime
+                )
+        elif image_bytes:
+            # Single image for backward compatibility
+            filename = "image.png" if mime_type == "image/png" else "image.jpg"
+            form.add_field(
+                "image", image_bytes, filename=filename, content_type=mime_type
+            )
 
         headers = {"Authorization": f"Bearer {self.api_key}"}
 
@@ -233,14 +266,21 @@ class GeminiAdapter(ImageAdapter):
                     credentials_path
                 )
                 self.client = genai.Client(
-                    vertexai=True, project=project, location=location, credentials=credentials
+                    vertexai=True,
+                    project=project,
+                    location=location,
+                    credentials=credentials,
                 )
                 self._using_vertex = True
-                logger.info(f"GeminiAdapter initialized with Vertex AI (project={project})")
+                logger.info(
+                    f"GeminiAdapter initialized with Vertex AI (project={project})"
+                )
             else:
                 # Fall back to API key if Vertex AI config is incomplete
                 self.client = genai.Client(api_key=api_key)
-                logger.info("GeminiAdapter initialized with API key (Vertex AI config incomplete)")
+                logger.info(
+                    "GeminiAdapter initialized with API key (Vertex AI config incomplete)"
+                )
         else:
             # Use API key
             self.client = genai.Client(api_key=api_key)
@@ -287,17 +327,31 @@ class GeminiAdapter(ImageAdapter):
     async def edit(
         self,
         prompt: str,
-        image_bytes: bytes,
-        mime_type: str,
+        image_bytes: bytes | None = None,
+        mime_type: str = "image/png",
         size: str = "1024x1024",
+        images: list[tuple[bytes, str]] | None = None,
         model: str = "imagen-3.0-generate-002",
     ) -> list[str]:
-        """Edit image with text prompt (multi-turn editing support) using google-genai SDK."""
+        """Edit image(s) with text prompt using google-genai SDK. Supports multiple images."""
         aspect_ratio = convert_size_to_aspect_ratio(size)
 
-        # Create image part from bytes
-        image_part = types.Part.from_bytes(data=image_bytes, mime_type=mime_type)
+        # Build content parts - all images followed by text prompt
+        content_parts = []
+
+        if images and len(images) > 0:
+            # Multiple images
+            for img_bytes, img_mime in images:
+                image_part = types.Part.from_bytes(data=img_bytes, mime_type=img_mime)
+                content_parts.append(image_part)
+        elif image_bytes:
+            # Single image for backward compatibility
+            image_part = types.Part.from_bytes(data=image_bytes, mime_type=mime_type)
+            content_parts.append(image_part)
+
+        # Add text prompt
         text_part = types.Part.from_text(text=prompt)
+        content_parts.append(text_part)
 
         config = types.GenerateContentConfig(
             response_modalities=["IMAGE"],
@@ -309,15 +363,15 @@ class GeminiAdapter(ImageAdapter):
         try:
             response = await self.client.aio.models.generate_content(
                 model=model,
-                contents=[image_part, text_part],
+                contents=content_parts,
                 config=config,
             )
 
-            images = []
+            images_result = []
             for part in response.parts:
                 if part.inline_data:
-                    images.append(part.inline_data.data)
-            return images
+                    images_result.append(part.inline_data.data)
+            return images_result
 
         except Exception as e:
             error_msg = str(e)
@@ -348,9 +402,33 @@ class GrokAdapter(ImageAdapter):
         return [response.url]
 
     async def edit(
-        self, prompt: str, image_url: str, model: str = "grok-imagine-1.0"
+        self,
+        prompt: str,
+        image_bytes: bytes | None = None,
+        mime_type: str = "image/png",
+        size: str = "1024x1024",
+        images: list[tuple[bytes, str]] | None = None,
+        model: str = "grok-imagine-1.0",
     ) -> list[str]:
-        """Edit image using xai-sdk."""
+        """Edit image using xai-sdk. Note: Grok currently supports single image only."""
+        # Get the first image to use
+        img_bytes, img_mime = None, "image/png"
+
+        if images and len(images) > 0:
+            img_bytes, img_mime = images[0]
+            if len(images) > 1:
+                logger.warning(
+                    f"Grok adapter received {len(images)} images but only uses the first one"
+                )
+        elif image_bytes:
+            img_bytes, img_mime = image_bytes, mime_type
+        else:
+            raise ValueError("No image provided for editing")
+
+        # Convert bytes to data URL
+        b64_str = base64.b64encode(img_bytes).decode("utf-8")
+        image_url = f"data:{img_mime};base64,{b64_str}"
+
         response = await self.client.image.sample(
             prompt=prompt,
             model=model,
@@ -404,7 +482,9 @@ class Main(star.Star):
                     "enabled": True,
                     "credentials_path": credentials_path,
                     "project": self.config.get("gemini_vertex_project", ""),
-                    "location": self.config.get("gemini_vertex_location", "us-central1"),
+                    "location": self.config.get(
+                        "gemini_vertex_location", "us-central1"
+                    ),
                 }
             return GeminiAdapter(api_key, timeout, vertex_config=vertex_config)
         elif provider == "grok":
@@ -540,11 +620,23 @@ class Main(star.Star):
                 logger.info(f"Using multi-turn editing for chat {chat_id}")
 
                 if is_url:
-                    # URL-based (Grok)
+                    # URL-based (Grok) - download then edit
                     if provider == "grok":
-                        result_urls = await adapter.edit(
-                            prompt, image_url=stored_image, model=model
-                        )
+                        async with aiohttp.ClientSession() as session:
+                            async with session.get(stored_image) as resp:
+                                if resp.status == 200:
+                                    image_bytes = await resp.read()
+                                    mime_type = detect_mime_type(image_bytes)
+                                    result_urls = await adapter.edit(
+                                        prompt,
+                                        image_bytes=image_bytes,
+                                        mime_type=mime_type,
+                                        model=model,
+                                    )
+                                else:
+                                    raise Exception(
+                                        f"Failed to download stored image: {resp.status}"
+                                    )
                     else:
                         # For non-Grok providers with URL, download and convert
                         async with aiohttp.ClientSession() as session:
@@ -554,19 +646,35 @@ class Main(star.Star):
                                     mime_type = detect_mime_type(image_bytes)
                                     if provider == "gemini":
                                         result_urls = await adapter.edit(
-                                            prompt, image_bytes, mime_type, image_size, model=model
+                                            prompt,
+                                            image_bytes,
+                                            mime_type,
+                                            image_size,
+                                            model=model,
                                         )
                                     else:  # openai
-                                        quality = self.config.get("openai_quality", "auto")
-                                        background = self.config.get("openai_background", "auto")
-                                        output_format = self.config.get("openai_output_format", "png")
+                                        quality = self.config.get(
+                                            "openai_quality", "auto"
+                                        )
+                                        background = self.config.get(
+                                            "openai_background", "auto"
+                                        )
+                                        output_format = self.config.get(
+                                            "openai_output_format", "png"
+                                        )
                                         result_urls = await adapter.edit(
-                                            prompt, image_bytes, mime_type, image_size,
-                                            quality=quality, background=background,
+                                            prompt,
+                                            image_bytes,
+                                            mime_type,
+                                            image_size,
+                                            quality=quality,
+                                            background=background,
                                             output_format=output_format,
                                         )
                                 else:
-                                    raise Exception(f"Failed to download stored image: {resp.status}")
+                                    raise Exception(
+                                        f"Failed to download stored image: {resp.status}"
+                                    )
                 else:
                     # Base64-based (OpenAI, Gemini)
                     image_bytes = base64.b64decode(stored_image)
@@ -576,19 +684,25 @@ class Main(star.Star):
                             prompt, image_bytes, mime_type, image_size, model=model
                         )
                     elif provider == "grok":
-                        # Grok needs URL, convert base64 to data URL
-                        b64_str = stored_image
-                        data_url = f"data:{mime_type};base64,{b64_str}"
+                        # Grok now uses bytes directly
+                        image_bytes = base64.b64decode(stored_image)
                         result_urls = await adapter.edit(
-                            prompt, image_url=data_url, model=model
+                            prompt,
+                            image_bytes=image_bytes,
+                            mime_type=mime_type,
+                            model=model,
                         )
                     else:  # openai
                         quality = self.config.get("openai_quality", "auto")
                         background = self.config.get("openai_background", "auto")
                         output_format = self.config.get("openai_output_format", "png")
                         result_urls = await adapter.edit(
-                            prompt, image_bytes, mime_type, image_size,
-                            quality=quality, background=background,
+                            prompt,
+                            image_bytes,
+                            mime_type,
+                            image_size,
+                            quality=quality,
+                            background=background,
                             output_format=output_format,
                         )
             elif images:
@@ -604,12 +718,12 @@ class Main(star.Star):
                                 prompt, image_bytes, mime_type, image_size, model=model
                             )
                         elif provider == "grok":
-                            # Grok needs image URL for editing
-                            # Convert bytes to base64 data URL
-                            b64_str = base64.b64encode(image_bytes).decode("utf-8")
-                            data_url = f"data:{mime_type};base64,{b64_str}"
+                            # Grok now uses bytes directly
                             result_urls = await adapter.edit(
-                                prompt, image_url=data_url, model=model
+                                prompt,
+                                image_bytes=image_bytes,
+                                mime_type=mime_type,
+                                model=model,
                             )
                         else:  # openai
                             quality = self.config.get("openai_quality", "auto")
@@ -650,7 +764,9 @@ class Main(star.Star):
                             )
                 else:
                     if provider == "gemini":
-                        result_urls = await adapter.generate(prompt, image_size, model=model)
+                        result_urls = await adapter.generate(
+                            prompt, image_size, model=model
+                        )
                     elif provider == "grok":
                         result_urls = await adapter.generate(
                             prompt, model=model, aspect_ratio=aspect_ratio
@@ -669,7 +785,9 @@ class Main(star.Star):
             else:
                 # Text-to-image
                 if provider == "gemini":
-                    result_urls = await adapter.generate(prompt, image_size, model=model)
+                    result_urls = await adapter.generate(
+                        prompt, image_size, model=model
+                    )
                 elif provider == "grok":
                     result_urls = await adapter.generate(
                         prompt, model=model, aspect_ratio=aspect_ratio
@@ -826,7 +944,9 @@ class Main(star.Star):
                     elif "x" in part:  # Size format like "1024x1024"
                         gen_size = part
 
-                await self._do_generate(event, chat_id, session_data, size=gen_size, n=gen_n)
+                await self._do_generate(
+                    event, chat_id, session_data, size=gen_size, n=gen_n
+                )
                 if chat_id in self.ACTIVE_SESSIONS:
                     del self.ACTIVE_SESSIONS[chat_id]
                 controller.stop()
@@ -844,9 +964,13 @@ class Main(star.Star):
                 last_image_data = await self._get_last_image(chat_id)
                 if last_image_data and last_image_data.get("last_image"):
                     await self._clear_last_image(chat_id)
-                    await event.send(event.plain_result(ERROR_MESSAGES["multi_turn_cleared"]))
+                    await event.send(
+                        event.plain_result(ERROR_MESSAGES["multi_turn_cleared"])
+                    )
                 else:
-                    await event.send(event.plain_result(ERROR_MESSAGES["no_multi_turn_history"]))
+                    await event.send(
+                        event.plain_result(ERROR_MESSAGES["no_multi_turn_history"])
+                    )
                 controller.keep(timeout=self.config.get("session_timeout", 300))
                 return
 
@@ -914,22 +1038,99 @@ class Main(star.Star):
         else:
             yield event.plain_result(ERROR_MESSAGES["no_multi_turn_history"])
 
+    async def _process_image_input(
+        self, image_input: str | bytes
+    ) -> tuple[bytes, str] | None:
+        """处理单个图片输入，支持URL、本地路径、base64和bytes。
+
+        Args:
+            image_input: 图片输入，可以是URL字符串、本地路径、base64 data URL或bytes
+
+        Returns:
+            tuple: (image_bytes, mime_type) 或 None 如果处理失败
+        """
+        try:
+            if isinstance(image_input, bytes):
+                # 直接是bytes
+                image_bytes = image_input
+                mime_type = detect_mime_type(image_bytes)
+                return image_bytes, mime_type
+
+            if not isinstance(image_input, str):
+                logger.warning(f"Unsupported image input type: {type(image_input)}")
+                return None
+
+            image_input = image_input.strip()
+            if not image_input:
+                return None
+
+            # 检查是否是 base64 data URL
+            if image_input.startswith("data:"):
+                import re
+
+                match = re.match(r"data:image/(\w+);base64,(.+)", image_input)
+                if match:
+                    mime_type = f"image/{match.group(1)}"
+                    image_bytes = base64.b64decode(match.group(2))
+                    return image_bytes, mime_type
+                else:
+                    logger.warning("Invalid base64 data URL format")
+                    return None
+
+            # 检查是否是本地文件路径
+            import os
+
+            if os.path.isfile(image_input):
+                with open(image_input, "rb") as f:
+                    image_bytes = f.read()
+                mime_type = detect_mime_type(image_bytes)
+                return image_bytes, mime_type
+
+            # 认为是 HTTP/HTTPS URL
+            if image_input.startswith("http://") or image_input.startswith("https://"):
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(image_input) as resp:
+                        if resp.status != 200:
+                            logger.warning(
+                                f"Failed to download image from URL: {resp.status}"
+                            )
+                            return None
+                        image_bytes = await resp.read()
+                        mime_type = detect_mime_type(image_bytes)
+                        return image_bytes, mime_type
+
+            # 尝试作为 base64 字符串处理（无 data: 前缀）
+            try:
+                image_bytes = base64.b64decode(image_input)
+                mime_type = detect_mime_type(image_bytes)
+                return image_bytes, mime_type
+            except Exception:
+                logger.warning(f"Unable to process image input: {image_input[:100]}...")
+                return None
+
+        except Exception as e:
+            logger.warning(f"Error processing image input: {e}")
+            return None
+
     @filter.llm_tool(name="generate_image")
     async def generate_image_tool(
         self,
         event: AstrMessageEvent,
         prompt: str,
-        image_url: str = "",
+        images: list = None,
         size: str = "1024x1024",
     ) -> str:
-        '''生成或编辑图像。当用户请求生成图片、画图、创建图像或编辑图片时使用此工具。
+        """生成或编辑图像。当用户请求生成图片、画图、创建图像或编辑图片时使用此工具。
 
         Args:
             prompt(string): 图像生成的详细描述，描述要生成的图像内容。
-            image_url(string): 可选。要编辑的图片URL。如果提供，将对图片进行编辑；否则生成新图片。
+            images(List[string]): 可选。要编辑的图片列表，支持URL、本地路径、base64。如果提供，将对图片进行编辑；否则生成新图片。
             size(string): 图像尺寸，如 1024x1024、1792x1024、1024x1792。默认为 1024x1024。
-        '''
-        logger.info(f"generate_image_tool called: prompt={prompt}, image_url={image_url[:50] if image_url else 'None'}, size={size}")
+        """
+        images_info = f"{len(images)} images" if images else "None"
+        logger.info(
+            f"generate_image_tool called: prompt={prompt}, images={images_info}, size={size}"
+        )
 
         # Use default provider from config
         provider = self.config.get("default_provider", "openai")
@@ -958,61 +1159,68 @@ class Main(star.Star):
             model = model_map.get(provider, "")
             aspect_ratio = convert_size_to_aspect_ratio(size)
 
+            # Process images list if provided
+            processed_images = []
+            if images:
+                if not isinstance(images, list):
+                    images = [images]
+                for img_input in images:
+                    result = await self._process_image_input(img_input)
+                    if result:
+                        processed_images.append(result)
+
             # Check if we're doing image-to-image (editing) or text-to-image
-            is_editing = bool(image_url and image_url.strip())
-            
+            is_editing = len(processed_images) > 0
+
             if is_editing:
-                # Image-to-image editing
-                logger.info(f"Performing image-to-image editing for provider {provider}")
-                
+                # Image-to-image editing - pass all processed images
+                logger.info(
+                    f"Performing image-to-image editing for provider {provider} with {len(processed_images)} image(s)"
+                )
+
                 if provider == "grok":
-                    # Grok uses URL directly
-                    result_urls = await adapter.edit(prompt, image_url=image_url, model=model)
-                else:
-                    # OpenAI and Gemini need bytes - download the image
-                    if image_url.startswith("data:"):
-                        # Base64 data URL
-                        # Format: data:image/png;base64,<base64_data>
-                        import re
-                        match = re.match(r"data:image/(\w+);base64,(.+)", image_url)
-                        if match:
-                            mime_type = f"image/{match.group(1)}"
-                            image_bytes = base64.b64decode(match.group(2))
-                        else:
-                            return "错误：无效的 base64 图片格式。"
-                    else:
-                        # HTTP URL - download the image
-                        async with aiohttp.ClientSession() as session:
-                            async with session.get(image_url) as resp:
-                                if resp.status != 200:
-                                    return f"错误：无法下载图片，状态码 {resp.status}。"
-                                image_bytes = await resp.read()
-                                mime_type = detect_mime_type(image_bytes)
-                    
-                    if provider == "gemini":
-                        result_urls = await adapter.edit(prompt, image_bytes, mime_type, size, model=model)
-                    else:  # openai
-                        quality = self.config.get("openai_quality", "auto")
-                        background = self.config.get("openai_background", "auto")
-                        output_format = self.config.get("openai_output_format", "png")
-                        result_urls = await adapter.edit(
-                            prompt, image_bytes, mime_type, size,
-                            quality=quality, background=background, output_format=output_format
-                        )
+                    # Grok uses bytes internally now
+                    result_urls = await adapter.edit(
+                        prompt, images=processed_images, model=model
+                    )
+                elif provider == "gemini":
+                    result_urls = await adapter.edit(
+                        prompt, images=processed_images, size=size, model=model
+                    )
+                else:  # openai
+                    quality = self.config.get("openai_quality", "auto")
+                    background = self.config.get("openai_background", "auto")
+                    output_format = self.config.get("openai_output_format", "png")
+                    result_urls = await adapter.edit(
+                        prompt,
+                        images=processed_images,
+                        size=size,
+                        quality=quality,
+                        background=background,
+                        output_format=output_format,
+                    )
             else:
                 # Text-to-image generation
-                logger.info(f"Performing text-to-image generation for provider {provider}")
-                
+                logger.info(
+                    f"Performing text-to-image generation for provider {provider}"
+                )
+
                 if provider == "gemini":
                     result_urls = await adapter.generate(prompt, size, model=model)
                 elif provider == "grok":
-                    result_urls = await adapter.generate(prompt, model=model, aspect_ratio=aspect_ratio)
+                    result_urls = await adapter.generate(
+                        prompt, model=model, aspect_ratio=aspect_ratio
+                    )
                 else:  # openai
                     quality = self.config.get("openai_quality", "auto")
                     background = self.config.get("openai_background", "auto")
                     output_format = self.config.get("openai_output_format", "png")
                     result_urls = await adapter.generate(
-                        prompt, size, quality=quality, background=background, output_format=output_format
+                        prompt,
+                        size,
+                        quality=quality,
+                        background=background,
+                        output_format=output_format,
                     )
 
             if not result_urls:
@@ -1035,6 +1243,7 @@ class Main(star.Star):
                 await event.send(event.image_result(first_url))
             elif first_url.startswith("data:"):
                 import re
+
                 match = re.match(r"data:image/(\w+);base64,(.+)", first_url)
                 if match:
                     mime_type = f"image/{match.group(1)}"
@@ -1048,7 +1257,9 @@ class Main(star.Star):
                 mime_type = "image/png"
                 image_b64 = first_url
                 # Send to user
-                await event.send(event.image_result(f"data:image/png;base64,{first_url}"))
+                await event.send(
+                    event.image_result(f"data:image/png;base64,{first_url}")
+                )
 
             # Return ImageContent so LLM can see the generated image
             # This allows the LLM to evaluate the result
