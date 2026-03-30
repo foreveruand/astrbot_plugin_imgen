@@ -102,6 +102,13 @@ def _encode_image_result(image_data: bytes | str) -> str:
     return image_data
 
 
+def _extract_base64_payload(image_data: str) -> str:
+    """Extract raw base64 payload from a data URL or plain base64 string."""
+    if image_data.startswith("data:") and "," in image_data:
+        return image_data.split(",", 1)[1]
+    return image_data
+
+
 class ChatFilter(SessionFilter):
     """Session filter keyed by chat_id (chat-level scope)."""
 
@@ -273,7 +280,8 @@ class GeminiAdapter(ImageAdapter):
                 from google.oauth2 import service_account
 
                 credentials = service_account.Credentials.from_service_account_file(
-                    credentials_path
+                    credentials_path,
+                    scopes=["https://www.googleapis.com/auth/cloud-platform"],
                 )
                 self.client = genai.Client(
                     vertexai=True,
@@ -522,6 +530,17 @@ class Main(star.Star):
         }
         primary_key, fallback_key = api_key_map.get(provider, ("api_key", "api_key"))
         return bool(self.config.get(primary_key) or self.config.get(fallback_key))
+
+    async def _send_image_output(
+        self, event: AstrMessageEvent, image_data: str, mime_type: str = "image/png"
+    ) -> None:
+        """Send image output to the user, handling URLs and base64 payloads."""
+        if image_data.startswith("http"):
+            await event.send(event.image_result(image_data))
+            return
+
+        image_b64 = _extract_base64_payload(image_data)
+        await event.send(event.chain_result([Comp.Image.fromBase64(image_b64)]))
 
     def _get_adapter(self, provider: str) -> ImageAdapter:
         """Get the appropriate adapter for the provider."""
@@ -844,10 +863,7 @@ class Main(star.Star):
             # Send results
             first_result = result_urls[0] if result_urls else None
             for url in result_urls:
-                if url.startswith("http"):
-                    await event.send(event.image_result(url))
-                else:
-                    await event.send(event.image_result(f"data:image/png;base64,{url}"))
+                await self._send_image_output(event, url)
 
             # Store result for multi-turn editing if enabled
             if enable_multi_turn and first_result:
@@ -1271,7 +1287,7 @@ class Main(star.Star):
                         image_b64 = base64.b64encode(image_bytes).decode("utf-8")
                         mime_type = detect_mime_type(image_bytes)
                 # Send to user
-                await event.send(event.image_result(first_url))
+                await self._send_image_output(event, first_url, mime_type)
             elif first_url.startswith("data:"):
                 import re
 
@@ -1283,14 +1299,12 @@ class Main(star.Star):
                     mime_type = "image/png"
                     image_b64 = first_url
                 # Send to user
-                await event.send(event.image_result(first_url))
+                await self._send_image_output(event, first_url, mime_type)
             else:
                 mime_type = "image/png"
                 image_b64 = first_url
                 # Send to user
-                await event.send(
-                    event.image_result(f"data:image/png;base64,{first_url}")
-                )
+                await self._send_image_output(event, first_url, mime_type)
 
             # Return ImageContent so LLM can see the generated image
             # This allows the LLM to evaluate the result

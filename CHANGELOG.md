@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.3.2] - 2026-03-30
+
+### Fixed
+
+- **Image Sending**:
+  - Fix base64/data URL image results being sent through `event.image_result()` and misidentified as remote file IDs
+  - Send non-HTTP images via `Comp.Image.fromBase64(...)` to avoid platform-side `Wrong remote file identifier specified: wrong string length`
+
+- **Gemini / Vertex AI**:
+  - Add explicit `cloud-platform` OAuth scope for Vertex service account credentials to avoid `invalid_scope`
+
 ## [1.3.1] - 2026-03-30
 
 ### Fixed

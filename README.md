@@ -112,6 +112,8 @@
   请检查当前提供商的配置是否完整。使用 Gemini Vertex AI 时，需要启用 `gemini_vertex_enabled`、填写 `gemini_vertex_project`，并上传 `gemini_vertex_credentials`，此时不需要再填写 `gemini_api_key`。
 - **绘图生成失败？**
   请检查网络连接以及 API 密钥余额，或者在日志中查看详细错误提示。
+- **Vertex AI 报 `invalid_scope`？**
+  插件现在会为上传的服务账号凭证显式申请 `https://www.googleapis.com/auth/cloud-platform` scope。更新到最新版插件后重新加载即可。
 - **Grok 支持多图编辑吗？**
   支持。根据 xAI 官方文档，Grok 图像编辑最多可接收 5 张输入图片，插件会在工具调用和会话模式下按顺序传递这些图片。
 - **会话超时了？**
