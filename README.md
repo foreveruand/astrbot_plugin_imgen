@@ -104,14 +104,16 @@
 本插件已支持以下服务：
 - OpenAI: `gpt-image-1`
 - Google Gemini: `imagen-3.0-generate-002` (使用 `google-genai` SDK)
-- Grok: `grok-imagine-1.0` (使用 `xai-sdk`)
+- Grok: `grok-imagine-image`（生成使用 `xai-sdk`，多图编辑使用 xAI 官方 `images/edits` JSON API）
 
 ## 常见问题
 
 - **提示“未配置 API 密钥”？**
-  请检查插件设置中的 `api_key` 是否正确填写。
+  请检查当前提供商的配置是否完整。使用 Gemini Vertex AI 时，需要启用 `gemini_vertex_enabled`、填写 `gemini_vertex_project`，并上传 `gemini_vertex_credentials`，此时不需要再填写 `gemini_api_key`。
 - **绘图生成失败？**
   请检查网络连接以及 API 密钥余额，或者在日志中查看详细错误提示。
+- **Grok 支持多图编辑吗？**
+  支持。根据 xAI 官方文档，Grok 图像编辑最多可接收 5 张输入图片，插件会在工具调用和会话模式下按顺序传递这些图片。
 - **会话超时了？**
   会话默认 5 分钟无操作会自动关闭，请重新输入 `/img` 开始新会话。
 

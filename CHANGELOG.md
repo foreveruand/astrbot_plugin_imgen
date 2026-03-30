@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.3.1] - 2026-03-30
+
+### Fixed
+
+- **Gemini / Vertex AI**:
+  - Fix Gemini image result normalization to avoid `startswith first arg must be bytes or a tuple of bytes, not str`
+  - Vertex AI mode no longer incorrectly requires `gemini_api_key`
+  - Fix uploaded Vertex service account JSON path resolution to read from `astrbot_plugin_data_dir`
+
+- **Multi-image Editing**:
+  - Fix session-based image editing to pass all uploaded images to providers that support multi-image input
+  - Fix Grok image editing to support up to 5 input images via xAI `images/edits` JSON API
+  - Remove misleading Grok "only uses the first one" behavior for tool calls
+
 ## [1.3.0] - 2026-03-28
 
 ### Added

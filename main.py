@@ -3,8 +3,10 @@ AstrBot Image Generation Plugin - Persona-based chat and image generation.
 """
 
 import base64
+import os
 import time
 import uuid
+from pathlib import Path
 
 import aiohttp
 import mcp.types
@@ -15,6 +17,7 @@ from google.genai import types
 import astrbot.api.message_components as Comp
 from astrbot.api import AstrBotConfig, logger, star
 from astrbot.api.event import AstrMessageEvent, filter
+from astrbot.core.utils.astrbot_path import get_astrbot_plugin_data_path
 from astrbot.core.utils.session_waiter import (
     SessionController,
     SessionFilter,
@@ -90,6 +93,13 @@ ERROR_MESSAGES = {
 def _get_kv_key(chat_id: str) -> str:
     """Generate KV storage key for multi-turn image session."""
     return f"img_session_{chat_id}"
+
+
+def _encode_image_result(image_data: bytes | str) -> str:
+    """Normalize provider image results to plain base64 strings."""
+    if isinstance(image_data, bytes):
+        return base64.b64encode(image_data).decode("utf-8")
+    return image_data
 
 
 class ChatFilter(SessionFilter):
@@ -312,7 +322,7 @@ class GeminiAdapter(ImageAdapter):
             images = []
             for part in response.parts:
                 if part.inline_data:
-                    images.append(part.inline_data.data)
+                    images.append(_encode_image_result(part.inline_data.data))
             return images
 
         except Exception as e:
@@ -370,7 +380,7 @@ class GeminiAdapter(ImageAdapter):
             images_result = []
             for part in response.parts:
                 if part.inline_data:
-                    images_result.append(part.inline_data.data)
+                    images_result.append(_encode_image_result(part.inline_data.data))
             return images_result
 
         except Exception as e:
@@ -387,6 +397,7 @@ class GrokAdapter(ImageAdapter):
     """Grok adapter using xai-sdk."""
 
     def __init__(self, api_key: str, timeout: int = 120):
+        self.api_key = api_key
         self.client = xai_sdk.AsyncClient(api_key=api_key)
         self.timeout = timeout
 
@@ -410,32 +421,51 @@ class GrokAdapter(ImageAdapter):
         images: list[tuple[bytes, str]] | None = None,
         model: str = "grok-imagine-1.0",
     ) -> list[str]:
-        """Edit image using xai-sdk. Note: Grok currently supports single image only."""
-        # Get the first image to use
-        img_bytes, img_mime = None, "image/png"
-
+        """Edit image(s) using xAI image edits API."""
         if images and len(images) > 0:
-            img_bytes, img_mime = images[0]
-            if len(images) > 1:
+            source_images = images[:5]
+            if len(images) > 5:
                 logger.warning(
-                    f"Grok adapter received {len(images)} images but only uses the first one"
+                    "Grok adapter received %s images; xAI only supports up to 5, extra images were ignored",
+                    len(images),
                 )
         elif image_bytes:
-            img_bytes, img_mime = image_bytes, mime_type
+            source_images = [(image_bytes, mime_type)]
         else:
             raise ValueError("No image provided for editing")
 
-        # Convert bytes to data URL
-        b64_str = base64.b64encode(img_bytes).decode("utf-8")
-        image_url = f"data:{img_mime};base64,{b64_str}"
+        payload = {
+            "prompt": prompt,
+            "model": model,
+            "images": [
+                {
+                    "type": "image_url",
+                    "url": f"data:{img_mime};base64,{base64.b64encode(img_bytes).decode('utf-8')}",
+                }
+                for img_bytes, img_mime in source_images
+            ],
+        }
 
-        response = await self.client.image.sample(
-            prompt=prompt,
-            model=model,
-            image_format="url",
-            image_url=image_url,
-        )
-        return [response.url]
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                "https://api.x.ai/v1/images/edits",
+                json=payload,
+                headers={
+                    "Authorization": f"Bearer {self.api_key}",
+                    "Content-Type": "application/json",
+                },
+                timeout=self.timeout,
+            ) as resp:
+                if resp.status != 200:
+                    error_text = await resp.text()
+                    raise Exception(f"Grok edit API error {resp.status}: {error_text}")
+                data = await resp.json()
+
+        if "data" in data:
+            return [item.get("url") or item.get("b64_json") for item in data["data"]]
+        if data.get("url"):
+            return [data["url"]]
+        raise Exception(f"Grok edit API returned unexpected response: {data}")
 
 
 class Main(star.Star):
@@ -457,6 +487,42 @@ class Main(star.Star):
         """Called when the plugin is disabled or reloaded."""
         logger.info("Image Generation plugin terminated")
 
+    def _get_plugin_data_dir(self) -> Path:
+        """Return the plugin's persistent data directory."""
+        return Path(get_astrbot_plugin_data_path()) / "astrbot_plugin_imgen"
+
+    def _resolve_plugin_data_file(self, file_path: str | None) -> str | None:
+        """Resolve a plugin-uploaded file path against astrbot_plugin_data_dir."""
+        if not file_path:
+            return None
+
+        candidate = Path(file_path)
+        if candidate.is_absolute():
+            return str(candidate)
+
+        return str((self._get_plugin_data_dir() / candidate).resolve(strict=False))
+
+    def _is_provider_configured(self, provider: str) -> bool:
+        """Check whether the current provider has the required credentials."""
+        if provider == "gemini" and self.config.get("gemini_vertex_enabled"):
+            credentials_files = self.config.get("gemini_vertex_credentials", [])
+            credentials_path = self._resolve_plugin_data_file(
+                credentials_files[0] if credentials_files else None
+            )
+            return bool(
+                credentials_path
+                and os.path.isfile(credentials_path)
+                and self.config.get("gemini_vertex_project", "").strip()
+            )
+
+        api_key_map = {
+            "openai": ("openai_api_key", "api_key"),
+            "gemini": ("gemini_api_key", "api_key"),
+            "grok": ("grok_api_key", "api_key"),
+        }
+        primary_key, fallback_key = api_key_map.get(provider, ("api_key", "api_key"))
+        return bool(self.config.get(primary_key) or self.config.get(fallback_key))
+
     def _get_adapter(self, provider: str) -> ImageAdapter:
         """Get the appropriate adapter for the provider."""
         timeout = self.config.get("timeout", 120)
@@ -477,7 +543,9 @@ class Main(star.Star):
             vertex_config = None
             if self.config.get("gemini_vertex_enabled"):
                 credentials_files = self.config.get("gemini_vertex_credentials", [])
-                credentials_path = credentials_files[0] if credentials_files else None
+                credentials_path = self._resolve_plugin_data_file(
+                    credentials_files[0] if credentials_files else None
+                )
                 vertex_config = {
                     "enabled": True,
                     "credentials_path": credentials_path,
@@ -551,14 +619,7 @@ class Main(star.Star):
 
         provider = self.config.get("default_provider", "openai")
 
-        # Check provider-specific API key
-        api_key_map = {
-            "openai": ("openai_api_key", "api_key"),
-            "gemini": ("gemini_api_key", "api_key"),
-            "grok": ("grok_api_key", "api_key"),
-        }
-        primary_key, fallback_key = api_key_map.get(provider, ("api_key", "api_key"))
-        if not (self.config.get(primary_key) or self.config.get(fallback_key)):
+        if not self._is_provider_configured(provider):
             await event.send(event.plain_result(ERROR_MESSAGES["no_api_key"]))
             return False
 
@@ -707,61 +768,37 @@ class Main(star.Star):
                         )
             elif images:
                 # Image-to-image
-                img_comp = images[0]
-                if hasattr(img_comp, "convert_to_base64"):
+                processed_images = []
+                for img_comp in images:
+                    if not hasattr(img_comp, "convert_to_base64"):
+                        continue
                     b64_data = await img_comp.convert_to_base64()
-                    if b64_data:
-                        image_bytes = base64.b64decode(b64_data)
-                        mime_type = detect_mime_type(image_bytes)
-                        if provider == "gemini":
-                            result_urls = await adapter.edit(
-                                prompt, image_bytes, mime_type, image_size, model=model
-                            )
-                        elif provider == "grok":
-                            # Grok now uses bytes directly
-                            result_urls = await adapter.edit(
-                                prompt,
-                                image_bytes=image_bytes,
-                                mime_type=mime_type,
-                                model=model,
-                            )
-                        else:  # openai
-                            quality = self.config.get("openai_quality", "auto")
-                            background = self.config.get("openai_background", "auto")
-                            output_format = self.config.get(
-                                "openai_output_format", "png"
-                            )
-                            result_urls = await adapter.edit(
-                                prompt,
-                                image_bytes,
-                                mime_type,
-                                image_size,
-                                quality=quality,
-                                background=background,
-                                output_format=output_format,
-                            )
-                    else:
-                        if provider == "gemini":
-                            result_urls = await adapter.generate(
-                                prompt, image_size, model=model
-                            )
-                        elif provider == "grok":
-                            result_urls = await adapter.generate(
-                                prompt, model=model, aspect_ratio=aspect_ratio
-                            )
-                        else:  # openai
-                            quality = self.config.get("openai_quality", "auto")
-                            background = self.config.get("openai_background", "auto")
-                            output_format = self.config.get(
-                                "openai_output_format", "png"
-                            )
-                            result_urls = await adapter.generate(
-                                prompt,
-                                image_size,
-                                quality=quality,
-                                background=background,
-                                output_format=output_format,
-                            )
+                    if not b64_data:
+                        continue
+                    image_bytes = base64.b64decode(b64_data)
+                    processed_images.append((image_bytes, detect_mime_type(image_bytes)))
+
+                if processed_images:
+                    if provider == "gemini":
+                        result_urls = await adapter.edit(
+                            prompt, images=processed_images, size=image_size, model=model
+                        )
+                    elif provider == "grok":
+                        result_urls = await adapter.edit(
+                            prompt, images=processed_images, model=model
+                        )
+                    else:  # openai
+                        quality = self.config.get("openai_quality", "auto")
+                        background = self.config.get("openai_background", "auto")
+                        output_format = self.config.get("openai_output_format", "png")
+                        result_urls = await adapter.edit(
+                            prompt,
+                            images=processed_images,
+                            size=image_size,
+                            quality=quality,
+                            background=background,
+                            output_format=output_format,
+                        )
                 else:
                     if provider == "gemini":
                         result_urls = await adapter.generate(
@@ -1135,14 +1172,9 @@ class Main(star.Star):
         # Use default provider from config
         provider = self.config.get("default_provider", "openai")
 
-        # Check API key for the provider
-        api_key_map = {
-            "openai": ("openai_api_key", "api_key"),
-            "gemini": ("gemini_api_key", "api_key"),
-            "grok": ("grok_api_key", "api_key"),
-        }
-        primary_key, fallback_key = api_key_map.get(provider, ("api_key", "api_key"))
-        if not (self.config.get(primary_key) or self.config.get(fallback_key)):
+        if not self._is_provider_configured(provider):
+            if provider == "gemini" and self.config.get("gemini_vertex_enabled"):
+                return "错误：未配置可用的 Vertex AI 凭证或项目 ID，请检查上传的 JSON 文件和 Vertex 配置。"
             return f"错误：未配置 {provider} 的 API 密钥，请在插件设置中配置。"
 
         try:
@@ -1179,7 +1211,6 @@ class Main(star.Star):
                 )
 
                 if provider == "grok":
-                    # Grok uses bytes internally now
                     result_urls = await adapter.edit(
                         prompt, images=processed_images, model=model
                     )
