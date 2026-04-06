@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.3.3] - 2026-04-06
+
+### Changed
+
+- **Grok / xAI Migration**:
+  - Remove the `xai-sdk` dependency to avoid package version conflicts
+  - Switch Grok image generation to xAI's OpenAI-compatible `/v1/images/generations` REST API
+  - Keep Grok image editing on xAI's required JSON `/v1/images/edits` endpoint
+  - Add `grok_api_url` configuration and align the default model to `grok-imagine-image`
+
 ## [1.3.2] - 2026-03-30
 
 ### Fixed

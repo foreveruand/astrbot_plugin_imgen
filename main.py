@@ -10,7 +10,6 @@ from pathlib import Path
 
 import aiohttp
 import mcp.types
-import xai_sdk
 from google import genai
 from google.genai import types
 
@@ -109,6 +108,44 @@ def _extract_base64_payload(image_data: str) -> str:
     return image_data
 
 
+def _extract_image_results(payload: dict) -> list[str]:
+    """Extract image URLs or base64 payloads from an API response."""
+    results = []
+    for item in payload.get("data", []) or []:
+        image_value = item.get("url") or item.get("b64_json")
+        if image_value:
+            results.append(image_value)
+
+    if not results:
+        image_value = payload.get("url") or payload.get("b64_json")
+        if image_value:
+            results.append(image_value)
+
+    return results
+
+
+def _normalize_grok_resolution(resolution: str | None) -> str | None:
+    """Map legacy pixel-style values to xAI's supported `1k`/`2k` resolution options."""
+    if resolution is None:
+        return None
+
+    value = str(resolution).strip().lower()
+    if not value:
+        return None
+
+    resolution_map = {
+        "1k": "1k",
+        "2k": "2k",
+        "1024": "1k",
+        "1024x1024": "1k",
+        "2048": "2k",
+        "2048x2048": "2k",
+        "1792x1024": "2k",
+        "1024x1792": "2k",
+    }
+    return resolution_map.get(value, value)
+
+
 class ChatFilter(SessionFilter):
     """Session filter keyed by chat_id (chat-level scope)."""
 
@@ -128,7 +165,7 @@ class ImageAdapter:
         self.timeout = timeout
 
     async def generate(
-        self, prompt: str, size: str = "1024x1024", n: int = 1
+        self, prompt: str, size: str = "1024x1024", n: int = 1, **kwargs
     ) -> list[str]:
         raise NotImplementedError
 
@@ -171,13 +208,14 @@ class OpenAIAdapter(ImageAdapter):
         quality: str = "auto",
         background: str = "auto",
         output_format: str = "png",
+        model: str = "gpt-image-1",
     ) -> list[str]:
-        """Generate image using gpt-image-1 model."""
+        """Generate image using an OpenAI-compatible image model."""
         url = f"{self.api_url}/v1/images/generations"
         payload = {
-            "model": "gpt-image-1",
+            "model": model,
             "prompt": prompt,
-            "n": n,
+            "n": max(1, int(n)),
             "size": size,
             "quality": quality,
             "background": background,
@@ -193,10 +231,7 @@ class OpenAIAdapter(ImageAdapter):
                     error_text = await resp.text()
                     raise Exception(f"OpenAI API error {resp.status}: {error_text}")
                 data = await resp.json()
-                return [
-                    item.get("url") or item.get("b64_json")
-                    for item in data.get("data", [])
-                ]
+                return _extract_image_results(data)
 
     async def edit(
         self,
@@ -208,13 +243,14 @@ class OpenAIAdapter(ImageAdapter):
         quality: str = "auto",
         background: str = "auto",
         output_format: str = "png",
+        model: str = "gpt-image-1",
     ) -> list[str]:
-        """Edit image(s) using gpt-image-1 model. Supports multiple images."""
+        """Edit image(s) using an OpenAI-compatible image model. Supports multiple images."""
         url = f"{self.api_url}/v1/images/edits"
 
         form = aiohttp.FormData()
         form.add_field("prompt", prompt)
-        form.add_field("model", "gpt-image-1")
+        form.add_field("model", model)
         form.add_field("size", size)
         form.add_field("quality", quality)
         form.add_field("background", background)
@@ -252,10 +288,7 @@ class OpenAIAdapter(ImageAdapter):
                         f"OpenAI edit API error {resp.status}: {error_text}"
                     )
                 data = await resp.json()
-                return [
-                    item.get("url") or item.get("b64_json")
-                    for item in data.get("data", [])
-                ]
+                return _extract_image_results(data)
 
 
 class GeminiAdapter(ImageAdapter):
@@ -402,23 +435,58 @@ class GeminiAdapter(ImageAdapter):
 
 
 class GrokAdapter(ImageAdapter):
-    """Grok adapter using xai-sdk."""
+    """Grok adapter using xAI's OpenAI-compatible REST endpoints."""
 
-    def __init__(self, api_key: str, timeout: int = 120):
-        self.api_key = api_key
-        self.client = xai_sdk.AsyncClient(api_key=api_key)
-        self.timeout = timeout
+    def __init__(
+        self, api_key: str, api_url: str = "https://api.x.ai", timeout: int = 120
+    ):
+        super().__init__(api_key, api_url, timeout)
+
+    def _get_headers(self) -> dict:
+        return {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
 
     async def generate(
-        self, prompt: str, model: str = "grok-imagine-1.0", aspect_ratio: str = "1:1"
+        self,
+        prompt: str,
+        model: str = "grok-imagine-image",
+        aspect_ratio: str = "1:1",
+        resolution: str = "1k",
+        n: int = 1,
     ) -> list[str]:
-        """Generate image using xai-sdk."""
-        response = await self.client.image.sample(
-            prompt=prompt,
-            model=model,
-            image_format="url",
-        )
-        return [response.url]
+        """Generate image using xAI's OpenAI-compatible `/v1/images/generations` API."""
+        url = f"{self.api_url}/v1/images/generations"
+        payload: dict[str, object] = {
+            "model": model,
+            "prompt": prompt,
+            "n": max(1, int(n)),
+        }
+
+        if aspect_ratio:
+            payload["aspect_ratio"] = aspect_ratio
+
+        normalized_resolution = _normalize_grok_resolution(resolution)
+        if normalized_resolution:
+            payload["resolution"] = normalized_resolution
+
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                url,
+                json=payload,
+                headers=self._get_headers(),
+                timeout=self.timeout,
+            ) as resp:
+                if resp.status != 200:
+                    error_text = await resp.text()
+                    raise Exception(f"Grok generate API error {resp.status}: {error_text}")
+                data = await resp.json()
+
+        results = _extract_image_results(data)
+        if results:
+            return results
+        raise Exception(f"Grok generate API returned unexpected response: {data}")
 
     async def edit(
         self,
@@ -427,9 +495,10 @@ class GrokAdapter(ImageAdapter):
         mime_type: str = "image/png",
         size: str = "1024x1024",
         images: list[tuple[bytes, str]] | None = None,
-        model: str = "grok-imagine-1.0",
+        model: str = "grok-imagine-image",
+        aspect_ratio: str | None = None,
     ) -> list[str]:
-        """Edit image(s) using xAI image edits API."""
+        """Edit image(s) using xAI's JSON-based `/v1/images/edits` API."""
         if images and len(images) > 0:
             source_images = images[:5]
             if len(images) > 5:
@@ -442,26 +511,30 @@ class GrokAdapter(ImageAdapter):
         else:
             raise ValueError("No image provided for editing")
 
-        payload = {
+        image_payloads = [
+            {
+                "type": "image_url",
+                "url": f"data:{img_mime};base64,{base64.b64encode(img_bytes).decode('utf-8')}",
+            }
+            for img_bytes, img_mime in source_images
+        ]
+
+        payload: dict[str, object] = {
             "prompt": prompt,
             "model": model,
-            "images": [
-                {
-                    "type": "image_url",
-                    "url": f"data:{img_mime};base64,{base64.b64encode(img_bytes).decode('utf-8')}",
-                }
-                for img_bytes, img_mime in source_images
-            ],
         }
+        if len(image_payloads) == 1:
+            payload["image"] = image_payloads[0]
+        else:
+            payload["images"] = image_payloads
+            if aspect_ratio:
+                payload["aspect_ratio"] = aspect_ratio
 
         async with aiohttp.ClientSession() as session:
             async with session.post(
-                "https://api.x.ai/v1/images/edits",
+                f"{self.api_url}/v1/images/edits",
                 json=payload,
-                headers={
-                    "Authorization": f"Bearer {self.api_key}",
-                    "Content-Type": "application/json",
-                },
+                headers=self._get_headers(),
                 timeout=self.timeout,
             ) as resp:
                 if resp.status != 200:
@@ -469,10 +542,9 @@ class GrokAdapter(ImageAdapter):
                     raise Exception(f"Grok edit API error {resp.status}: {error_text}")
                 data = await resp.json()
 
-        if "data" in data:
-            return [item.get("url") or item.get("b64_json") for item in data["data"]]
-        if data.get("url"):
-            return [data["url"]]
+        results = _extract_image_results(data)
+        if results:
+            return results
         raise Exception(f"Grok edit API returned unexpected response: {data}")
 
 
@@ -576,7 +648,10 @@ class Main(star.Star):
             return GeminiAdapter(api_key, timeout, vertex_config=vertex_config)
         elif provider == "grok":
             api_key = self.config.get("grok_api_key") or self.config.get("api_key", "")
-            return GrokAdapter(api_key, timeout)
+            api_url = self.config.get("grok_api_url") or self.config.get(
+                "api_url", "https://api.x.ai"
+            )
+            return GrokAdapter(api_key, api_url, timeout)
         else:
             raise ValueError(f"Unknown provider: {provider}")
 
@@ -592,7 +667,7 @@ class Main(star.Star):
     ) -> None:
         """Store last generated image to KV storage for multi-turn editing."""
         key = _get_kv_key(chat_id)
-        kv_data = await self.get_kv_data(key, None) or {
+        kv_data: dict[str, object] = await self.get_kv_data(key, None) or {
             "prompt_history": [],
         }
 
@@ -670,12 +745,17 @@ class Main(star.Star):
             model_map = {
                 "openai": self.config.get("openai_model", "gpt-image-1"),
                 "gemini": self.config.get("gemini_model", "imagen-3.0-generate-002"),
-                "grok": self.config.get("grok_model", "grok-imagine-1.0"),
+                "grok": self.config.get("grok_model", "grok-imagine-image"),
             }
             model = model_map.get(provider, "")
 
             # Get provider-specific settings
             aspect_ratio = convert_size_to_aspect_ratio(image_size)
+            grok_aspect_ratio = aspect_ratio
+            configured_grok_aspect_ratio = self.config.get("grok_aspect_ratio", "")
+            if not size and configured_grok_aspect_ratio:
+                grok_aspect_ratio = configured_grok_aspect_ratio
+            grok_resolution = self.config.get("grok_resolution", "1k")
 
             # Multi-turn editing: check for last_image in KV storage
             enable_multi_turn = self.config.get("enable_multi_turn", True)
@@ -693,6 +773,7 @@ class Main(star.Star):
 
             if use_multi_turn_edit:
                 # Multi-turn editing using stored last_image
+                assert last_image_data is not None
                 stored_image = last_image_data["last_image"]
                 is_url = last_image_data.get("last_image_is_url", False)
                 stored_mime = last_image_data.get("last_image_mime", "image/png")
@@ -712,6 +793,7 @@ class Main(star.Star):
                                         image_bytes=image_bytes,
                                         mime_type=mime_type,
                                         model=model,
+                                        aspect_ratio=grok_aspect_ratio,
                                     )
                                 else:
                                     raise Exception(
@@ -750,6 +832,7 @@ class Main(star.Star):
                                             quality=quality,
                                             background=background,
                                             output_format=output_format,
+                                            model=model,
                                         )
                                 else:
                                     raise Exception(
@@ -771,6 +854,7 @@ class Main(star.Star):
                             image_bytes=image_bytes,
                             mime_type=mime_type,
                             model=model,
+                            aspect_ratio=grok_aspect_ratio,
                         )
                     else:  # openai
                         quality = self.config.get("openai_quality", "auto")
@@ -784,6 +868,7 @@ class Main(star.Star):
                             quality=quality,
                             background=background,
                             output_format=output_format,
+                            model=model,
                         )
             elif images:
                 # Image-to-image
@@ -804,7 +889,10 @@ class Main(star.Star):
                         )
                     elif provider == "grok":
                         result_urls = await adapter.edit(
-                            prompt, images=processed_images, model=model
+                            prompt,
+                            images=processed_images,
+                            model=model,
+                            aspect_ratio=grok_aspect_ratio,
                         )
                     else:  # openai
                         quality = self.config.get("openai_quality", "auto")
@@ -817,6 +905,7 @@ class Main(star.Star):
                             quality=quality,
                             background=background,
                             output_format=output_format,
+                            model=model,
                         )
                 else:
                     if provider == "gemini":
@@ -825,7 +914,11 @@ class Main(star.Star):
                         )
                     elif provider == "grok":
                         result_urls = await adapter.generate(
-                            prompt, model=model, aspect_ratio=aspect_ratio
+                            prompt,
+                            model=model,
+                            aspect_ratio=grok_aspect_ratio,
+                            resolution=grok_resolution,
+                            n=n,
                         )
                     else:  # openai
                         quality = self.config.get("openai_quality", "auto")
@@ -834,9 +927,11 @@ class Main(star.Star):
                         result_urls = await adapter.generate(
                             prompt,
                             image_size,
+                            n=n,
                             quality=quality,
                             background=background,
                             output_format=output_format,
+                            model=model,
                         )
             else:
                 # Text-to-image
@@ -846,7 +941,11 @@ class Main(star.Star):
                     )
                 elif provider == "grok":
                     result_urls = await adapter.generate(
-                        prompt, model=model, aspect_ratio=aspect_ratio
+                        prompt,
+                        model=model,
+                        aspect_ratio=grok_aspect_ratio,
+                        resolution=grok_resolution,
+                        n=n,
                     )
                 else:  # openai
                     quality = self.config.get("openai_quality", "auto")
@@ -855,9 +954,11 @@ class Main(star.Star):
                     result_urls = await adapter.generate(
                         prompt,
                         image_size,
+                        n=n,
                         quality=quality,
                         background=background,
                         output_format=output_format,
+                        model=model,
                     )
 
             # Send results
@@ -1170,7 +1271,7 @@ class Main(star.Star):
         self,
         event: AstrMessageEvent,
         prompt: str,
-        images: list = None,
+        images: list | None = None,
         size: str = "1024x1024",
     ) -> str:
         """生成或编辑图像。当用户请求生成图片、画图、创建图像或编辑图片时使用此工具。
@@ -1202,10 +1303,17 @@ class Main(star.Star):
             model_map = {
                 "openai": self.config.get("openai_model", "gpt-image-1"),
                 "gemini": self.config.get("gemini_model", "imagen-3.0-generate-002"),
-                "grok": self.config.get("grok_model", "grok-imagine-1.0"),
+                "grok": self.config.get("grok_model", "grok-imagine-image"),
             }
             model = model_map.get(provider, "")
             aspect_ratio = convert_size_to_aspect_ratio(size)
+            grok_aspect_ratio = aspect_ratio
+            configured_grok_aspect_ratio = self.config.get("grok_aspect_ratio", "")
+            if configured_grok_aspect_ratio and size == self.config.get(
+                "default_size", "1024x1024"
+            ):
+                grok_aspect_ratio = configured_grok_aspect_ratio
+            grok_resolution = self.config.get("grok_resolution", "1k")
 
             # Process images list if provided
             processed_images = []
@@ -1228,7 +1336,10 @@ class Main(star.Star):
 
                 if provider == "grok":
                     result_urls = await adapter.edit(
-                        prompt, images=processed_images, model=model
+                        prompt,
+                        images=processed_images,
+                        model=model,
+                        aspect_ratio=grok_aspect_ratio,
                     )
                 elif provider == "gemini":
                     result_urls = await adapter.edit(
@@ -1245,6 +1356,7 @@ class Main(star.Star):
                         quality=quality,
                         background=background,
                         output_format=output_format,
+                        model=model,
                     )
             else:
                 # Text-to-image generation
@@ -1256,7 +1368,10 @@ class Main(star.Star):
                     result_urls = await adapter.generate(prompt, size, model=model)
                 elif provider == "grok":
                     result_urls = await adapter.generate(
-                        prompt, model=model, aspect_ratio=aspect_ratio
+                        prompt,
+                        model=model,
+                        aspect_ratio=grok_aspect_ratio,
+                        resolution=grok_resolution,
                     )
                 else:  # openai
                     quality = self.config.get("openai_quality", "auto")
@@ -1268,6 +1383,7 @@ class Main(star.Star):
                         quality=quality,
                         background=background,
                         output_format=output_format,
+                        model=model,
                     )
 
             if not result_urls:
