@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.3.7] - 2026-04-22
+
+### Fixed
+
+- **Third-Party OpenAI-Compatible Response Parsing**:
+  - Add compatibility for string `choices[].message.content` payloads where image data is returned as `![image]` followed by base64 content.
+  - Add parsing support for markdown image syntax and inline `data:image/...;base64,...` text content.
+  - Add fallback extraction for incomplete markdown (missing closing `)`) and URL-safe base64 (`-_`) payload variants.
+
+- **Error Logging and User Message Safety**:
+  - Redact large inline base64/data-URL content in error text before logging or sending to users.
+  - Truncate error text to prevent oversized message bursts on platforms like Telegram.
+  - Replace full raw payload dump in "no image returned" errors with compact response summaries.
+
 ## [1.3.6] - 2026-04-22
 
 ### Changed

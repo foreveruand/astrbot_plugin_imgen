@@ -116,6 +116,8 @@
   请检查网络连接以及 API 密钥余额，或者在日志中查看详细错误提示。
 - **报错 `Failed to download stored image: 404`？**
   这通常表示多轮编辑缓存中的上一张图片链接已失效。新版本会在有文字描述时自动回退到仅使用 prompt 继续生成，并清理失效缓存；若需强制重置，也可在会话内执行 `clear`。
+- **第三方兼容接口返回 `![image]` + 编码，提示“未返回图片”？**
+  新版本已兼容这类字符串格式，会自动从 `choices[].message.content` 中提取图片编码。同时错误日志和用户侧错误信息会自动脱敏与截断，避免输出整段图片编码导致平台流控。
 - **Vertex AI 报 `invalid_scope`？**
   插件现在会为上传的服务账号凭证显式申请 `https://www.googleapis.com/auth/cloud-platform` scope。更新到最新版插件后重新加载即可。
 - **Grok 现在还依赖 `xai_sdk` 吗？**

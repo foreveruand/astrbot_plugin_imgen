@@ -5,6 +5,7 @@ AstrBot Image Generation Plugin - Persona-based chat and image generation.
 import base64
 import json
 import os
+import re
 import time
 import uuid
 from pathlib import Path
@@ -28,6 +29,7 @@ from astrbot.core.utils.session_waiter import (
 # Allowed image MIME types
 ALLOWED_MIME_TYPES = {"image/png", "image/jpeg", "image/webp", "image/gif"}
 MAX_IMAGE_SIZE = 20 * 1024 * 1024  # 20MB
+MAX_ERROR_TEXT_LENGTH = 220
 
 
 def detect_mime_type(data: bytes) -> str:
@@ -149,7 +151,104 @@ def _extract_image_results(payload: dict) -> list[str]:
                     image_value = image_obj.get("url")
                     if image_value:
                         results.append(image_value)
+        elif isinstance(content, str):
+            results.extend(_extract_image_results_from_text_content(content))
 
+    if not results:
+        # Fallback for non-standard compatible responses:
+        # scan the full JSON text for inline image payloads.
+        payload_text = json.dumps(payload, ensure_ascii=False)
+        results.extend(_extract_image_results_from_text_content(payload_text))
+
+    if results:
+        # Keep order while removing duplicates
+        return list(dict.fromkeys(results))
+    return results
+
+
+def _payload_summary(payload: dict) -> str:
+    """Build a compact payload summary for logs/errors without inline large data."""
+    keys = sorted(payload.keys())
+    choices = payload.get("choices", [])
+    data = payload.get("data", [])
+    return (
+        f"keys={keys}, choices={len(choices) if isinstance(choices, list) else 0}, "
+        f"data={len(data) if isinstance(data, list) else 0}"
+    )
+
+
+def _sanitize_error_text(value: str, max_length: int = MAX_ERROR_TEXT_LENGTH) -> str:
+    """Redact inline image payloads and truncate long errors."""
+    text = str(value)
+    text = re.sub(
+        r"data:image/[a-zA-Z0-9.+-]+;base64,[A-Za-z0-9+/=\s]+",
+        "data:image/...;base64,[omitted]",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(
+        r"\b[A-Za-z0-9+/]{512,}={0,2}\b",
+        "[base64 omitted]",
+        text,
+    )
+    text = re.sub(r"\s+", " ", text).strip()
+    if len(text) > max_length:
+        return f"{text[:max_length]}..."
+    return text
+
+
+def _extract_image_results_from_text_content(content: str) -> list[str]:
+    """Extract image payloads from string content returned by some compatible APIs."""
+    results: list[str] = []
+
+    # Markdown image syntax: ![alt](http://... or data:image/...)
+    for match in re.finditer(r"!\[[^\]]*\]\(([^)]+)\)", content, flags=re.S):
+        image_value = match.group(1).strip()
+        if image_value.startswith("http") or image_value.startswith("data:image/"):
+            results.append(image_value)
+
+    # Tolerate incomplete markdown image syntax without a closing ')'
+    for match in re.finditer(
+        r"!\[[^\]]*\]\(\s*(data:image/[a-zA-Z0-9.+-]+;base64,[A-Za-z0-9+/_=\-\s]+)",
+        content,
+        flags=re.IGNORECASE | re.S,
+    ):
+        image_value = re.sub(r"\s+", "", match.group(1))
+        if image_value:
+            results.append(image_value)
+
+    # Direct data URL embedded in plain text
+    for match in re.finditer(
+        r"data:image/[a-zA-Z0-9.+-]+;base64,[A-Za-z0-9+/_=\-\s]+",
+        content,
+        flags=re.IGNORECASE,
+    ):
+        image_value = re.sub(r"\s+", "", match.group(0))
+        results.append(image_value)
+
+    # Third-party format: "![image]" followed by raw base64
+    marker_match = re.search(r"!\[image\](.*)", content, flags=re.IGNORECASE | re.S)
+    if marker_match:
+        tail = marker_match.group(1).strip().strip("`")
+        candidate = re.sub(r"\s+", "", tail).lstrip("(").rstrip(")")
+        if candidate and candidate.startswith("data:image/"):
+            results.append(candidate)
+        elif (
+            re.fullmatch(r"[A-Za-z0-9+/_=\-]+", candidate or "")
+            and len(candidate) >= 128
+        ):
+            padded = candidate + ("=" * ((4 - len(candidate) % 4) % 4))
+            try:
+                if "-" in padded or "_" in padded:
+                    base64.urlsafe_b64decode(padded)
+                else:
+                    base64.b64decode(padded, validate=True)
+                results.append(padded)
+            except Exception:
+                pass
+
+    if results:
+        return list(dict.fromkeys(results))
     return results
 
 
@@ -290,14 +389,16 @@ class OpenAIAdapter(ImageAdapter):
     ):
         body = await resp.text()
         if resp.status != 200:
-            raise Exception(f"{error_prefix} {resp.status}: {body}")
+            safe_body = _sanitize_error_text(body, max_length=500)
+            raise Exception(f"{error_prefix} {resp.status}: {safe_body}")
         try:
             return json.loads(body)
         except json.JSONDecodeError as exc:
             content_type = resp.headers.get("Content-Type", "unknown")
+            safe_body = _sanitize_error_text(body, max_length=500)
             raise Exception(
                 f"{error_prefix} returned non-JSON response "
-                f"(status {resp.status}, content-type {content_type}): {body[:500]}"
+                f"(status {resp.status}, content-type {content_type}): {safe_body}"
             ) from exc
 
     async def generate(
@@ -336,7 +437,8 @@ class OpenAIAdapter(ImageAdapter):
                     results = _extract_image_results(data)
                     if not results:
                         raise Exception(
-                            f"OpenAI-compatible API returned no image: {data}"
+                            "OpenAI-compatible API returned no image; "
+                            f"response summary: {_payload_summary(data)}"
                         )
                     return results
 
@@ -413,7 +515,8 @@ class OpenAIAdapter(ImageAdapter):
                     results = _extract_image_results(data)
                     if not results:
                         raise Exception(
-                            f"OpenAI-compatible API returned no image: {data}"
+                            "OpenAI-compatible API returned no image; "
+                            f"response summary: {_payload_summary(data)}"
                         )
                     return results
 
@@ -1182,9 +1285,10 @@ class Main(star.Star):
             return True
 
         except Exception as e:
-            logger.error(f"Image generation error: {e}")
+            safe_error = _sanitize_error_text(str(e))
+            logger.error(f"Image generation error: {safe_error}")
             await event.send(
-                event.plain_result(ERROR_MESSAGES["api_error"].format(error=str(e)))
+                event.plain_result(ERROR_MESSAGES["api_error"].format(error=safe_error))
             )
             return False
 
@@ -1633,5 +1737,6 @@ class Main(star.Star):
             )
 
         except Exception as e:
-            logger.error(f"Image generation tool error: {e}")
-            return f"图像生成失败：{str(e)}"
+            safe_error = _sanitize_error_text(str(e))
+            logger.error(f"Image generation tool error: {safe_error}")
+            return f"图像生成失败：{safe_error}"
