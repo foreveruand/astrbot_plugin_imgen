@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.3.8] - 2026-04-22
+
+### Fixed
+
+- **Tool Input Logging Clarity**:
+  - When an image URL input cannot be downloaded (for example HTTP 403), log it as a skipped image input instead of a hard failure.
+  - Add an explicit fallback log when all provided image inputs are invalid and the tool switches to text-to-image generation.
+  - Keep generation flow unchanged so successful text-to-image responses are not misinterpreted as tool execution failures.
+
 ## [1.3.7] - 2026-04-22
 
 ### Fixed

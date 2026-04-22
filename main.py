@@ -145,6 +145,10 @@ def _extract_image_results(payload: dict) -> list[str]:
                     continue
                 part_type = part.get("type")
                 if part_type not in {"output_image", "image_url"}:
+                    if part_type == "text" and isinstance(part.get("text"), str):
+                        results.extend(
+                            _extract_image_results_from_text_content(part.get("text"))
+                        )
                     continue
                 image_obj = part.get("image_url") or {}
                 if isinstance(image_obj, dict):
@@ -246,6 +250,28 @@ def _extract_image_results_from_text_content(content: str) -> list[str]:
                 results.append(padded)
             except Exception:
                 pass
+
+    # Compatibility fallback for some OpenAI-compatible channels that return
+    # plain URL text in `message.content` instead of structured image fields.
+    plain_urls: list[str] = []
+    for match in re.finditer(r'https?://[^\s)\]>"]+', content):
+        candidate = match.group(0).strip().rstrip(".,;!?")
+        if candidate:
+            plain_urls.append(candidate)
+    if plain_urls:
+        image_like = [
+            url
+            for url in plain_urls
+            if re.search(r"\.(png|jpe?g|webp|gif|bmp|avif)(?:$|[?#])", url, re.I)
+        ]
+        if image_like:
+            results.extend(image_like)
+        elif len(plain_urls) == 1:
+            normalized = content.strip().strip("`").strip()
+            if normalized.startswith("<") and normalized.endswith(">"):
+                normalized = normalized[1:-1].strip()
+            if normalized == plain_urls[0]:
+                results.append(plain_urls[0])
 
     if results:
         return list(dict.fromkeys(results))
@@ -1535,10 +1561,9 @@ class Main(star.Star):
                     return None
 
             # 检查是否是本地文件路径
-            import os
-
-            if os.path.isfile(image_input):
-                with open(image_input, "rb") as f:
+            image_path = Path(image_input)
+            if image_path.is_file():
+                with image_path.open("rb") as f:
                     image_bytes = f.read()
                 mime_type = detect_mime_type(image_bytes)
                 return image_bytes, mime_type
@@ -1548,8 +1573,10 @@ class Main(star.Star):
                 async with aiohttp.ClientSession() as session:
                     async with session.get(image_input) as resp:
                         if resp.status != 200:
-                            logger.warning(
-                                f"Failed to download image from URL: {resp.status}"
+                            logger.info(
+                                "Skip image input URL because download failed (HTTP %s): %s",
+                                resp.status,
+                                image_input,
                             )
                             return None
                         image_bytes = await resp.read()
@@ -1627,6 +1654,11 @@ class Main(star.Star):
                     result = await self._process_image_input(img_input)
                     if result:
                         processed_images.append(result)
+                if not processed_images:
+                    logger.info(
+                        "No valid image inputs after preprocessing (%d provided); fallback to text-to-image generation.",
+                        len(images),
+                    )
 
             # Check if we're doing image-to-image (editing) or text-to-image
             is_editing = len(processed_images) > 0
@@ -1705,7 +1737,7 @@ class Main(star.Star):
                         image_b64 = base64.b64encode(image_bytes).decode("utf-8")
                         mime_type = detect_mime_type(image_bytes)
                 # Send to user
-                await self._send_image_output(event, first_url, mime_type)
+                # await self._send_image_output(event, first_url, mime_type)
             elif first_url.startswith("data:"):
                 import re
 
@@ -1717,12 +1749,12 @@ class Main(star.Star):
                     mime_type = "image/png"
                     image_b64 = first_url
                 # Send to user
-                await self._send_image_output(event, first_url, mime_type)
+                # await self._send_image_output(event, first_url, mime_type)
             else:
                 mime_type = "image/png"
                 image_b64 = first_url
                 # Send to user
-                await self._send_image_output(event, first_url, mime_type)
+                # await self._send_image_output(event, first_url, mime_type)
 
             # Return ImageContent so LLM can see the generated image
             # This allows the LLM to evaluate the result
