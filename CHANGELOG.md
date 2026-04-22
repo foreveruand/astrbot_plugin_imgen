@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.3.4] - 2026-04-22
+
+### Fixed
+
+- **OpenRouter OpenAI-Compatible Image Calls**:
+  - Detect OpenRouter base URL automatically and normalize it to include `/api` when needed (e.g. `https://openrouter.ai` -> `https://openrouter.ai/api`)
+  - Route OpenRouter image generation/editing requests through `/v1/chat/completions` with image modalities, matching current OpenRouter image-generation documentation
+  - Parse image outputs from chat-style responses (`choices[].message.images`) in addition to classic `data[].url/b64_json`
+  - Add model alias normalization for common GPT-5.4 Image 2 typos (e.g. `gpt-5.4-image2` -> `openai/gpt-5.4-image-2`)
+  - Improve non-JSON API response handling to surface clearer upstream errors
+
 ## [1.3.3] - 2026-04-06
 
 ### Changed

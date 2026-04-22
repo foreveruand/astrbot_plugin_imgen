@@ -45,13 +45,13 @@
     },
     "openai_api_url": {
         "description": "OpenAI API 地址",
-        "hint": "OpenAI API 基础 URL，如: https://api.openai.com",
+        "hint": "OpenAI API 基础 URL，如: https://api.openai.com；OpenRouter 推荐: https://openrouter.ai/api",
         "type": "string",
         "default": "https://api.openai.com"
     },
     "openai_model": {
         "description": "OpenAI 模型",
-        "hint": "OpenAI 图像生成模型",
+        "hint": "OpenAI 图像生成模型（OpenRouter 示例: openai/gpt-5.4-image-2）",
         "type": "string",
         "default": "gpt-image-1"
     },

@@ -3,10 +3,12 @@ AstrBot Image Generation Plugin - Persona-based chat and image generation.
 """
 
 import base64
+import json
 import os
 import time
 import uuid
 from pathlib import Path
+from urllib.parse import urlparse, urlunparse
 
 import aiohttp
 import mcp.types
@@ -121,7 +123,70 @@ def _extract_image_results(payload: dict) -> list[str]:
         if image_value:
             results.append(image_value)
 
+    # OpenRouter / OpenAI chat-style image responses
+    for choice in payload.get("choices", []) or []:
+        message = (choice or {}).get("message") or {}
+
+        for image_item in message.get("images", []) or []:
+            if not isinstance(image_item, dict):
+                continue
+            image_obj = image_item.get("image_url") or image_item.get("imageUrl") or {}
+            if isinstance(image_obj, dict):
+                image_value = image_obj.get("url")
+                if image_value:
+                    results.append(image_value)
+
+        content = message.get("content")
+        if isinstance(content, list):
+            for part in content:
+                if not isinstance(part, dict):
+                    continue
+                part_type = part.get("type")
+                if part_type not in {"output_image", "image_url"}:
+                    continue
+                image_obj = part.get("image_url") or {}
+                if isinstance(image_obj, dict):
+                    image_value = image_obj.get("url")
+                    if image_value:
+                        results.append(image_value)
+
     return results
+
+
+def _is_openrouter_api_url(api_url: str) -> bool:
+    """Detect whether the configured API URL targets OpenRouter."""
+    return "openrouter.ai" in (urlparse(api_url).netloc or "").lower()
+
+
+def _normalize_openrouter_api_url(api_url: str) -> str:
+    """Normalize OpenRouter base URL so downstream calls can append `/v1/...` safely."""
+    parsed = urlparse(api_url)
+    path = (parsed.path or "").rstrip("/")
+    if path.endswith("/v1"):
+        path = path[:-3]
+    if not path:
+        path = "/api"
+    elif not path.startswith("/api"):
+        path = f"/api{path}"
+
+    return urlunparse(parsed._replace(path=path)).rstrip("/")
+
+
+def _normalize_openrouter_model(model: str) -> str:
+    """Normalize common OpenRouter model aliases/mistypes."""
+    normalized = (model or "").strip()
+    aliases = {
+        "gpt-5.4-image2": "openai/gpt-5.4-image-2",
+        "gpt-5.4-image-2": "openai/gpt-5.4-image-2",
+        "openai/gpt-5.4-image2": "openai/gpt-5.4-image-2",
+    }
+    return aliases.get(normalized, normalized)
+
+
+def _to_data_url(image_bytes: bytes, mime_type: str) -> str:
+    """Convert raw image bytes to `data:<mime>;base64,...`."""
+    image_b64 = base64.b64encode(image_bytes).decode("utf-8")
+    return f"data:{mime_type};base64,{image_b64}"
 
 
 def _normalize_grok_resolution(resolution: str | None) -> str | None:
@@ -194,11 +259,30 @@ class ImageAdapter:
 class OpenAIAdapter(ImageAdapter):
     """OpenAI image generation adapter for gpt-image-1 model."""
 
+    def __init__(self, api_key: str, api_url: str, timeout: int = 120):
+        super().__init__(api_key=api_key, api_url=api_url, timeout=timeout)
+        self._is_openrouter = _is_openrouter_api_url(self.api_url)
+        if self._is_openrouter:
+            self.api_url = _normalize_openrouter_api_url(self.api_url)
+
     def _get_headers(self) -> dict:
         return {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
         }
+
+    async def _read_json_response(self, resp: aiohttp.ClientResponse, error_prefix: str):
+        body = await resp.text()
+        if resp.status != 200:
+            raise Exception(f"{error_prefix} {resp.status}: {body}")
+        try:
+            return json.loads(body)
+        except json.JSONDecodeError as exc:
+            content_type = resp.headers.get("Content-Type", "unknown")
+            raise Exception(
+                f"{error_prefix} returned non-JSON response "
+                f"(status {resp.status}, content-type {content_type}): {body[:500]}"
+            ) from exc
 
     async def generate(
         self,
@@ -211,6 +295,30 @@ class OpenAIAdapter(ImageAdapter):
         model: str = "gpt-image-1",
     ) -> list[str]:
         """Generate image using an OpenAI-compatible image model."""
+        if self._is_openrouter:
+            url = f"{self.api_url}/v1/chat/completions"
+            model = _normalize_openrouter_model(model)
+            payload = {
+                "model": model,
+                "messages": [{"role": "user", "content": prompt}],
+                "modalities": ["image", "text"],
+                "stream": False,
+                "image_config": {"aspect_ratio": convert_size_to_aspect_ratio(size)},
+            }
+
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    url,
+                    json=payload,
+                    headers=self._get_headers(),
+                    timeout=self.timeout,
+                ) as resp:
+                    data = await self._read_json_response(resp, "OpenRouter API error")
+                    results = _extract_image_results(data)
+                    if not results:
+                        raise Exception(f"OpenRouter API returned no image: {data}")
+                    return results
+
         url = f"{self.api_url}/v1/images/generations"
         payload = {
             "model": model,
@@ -227,10 +335,7 @@ class OpenAIAdapter(ImageAdapter):
             async with session.post(
                 url, json=payload, headers=self._get_headers(), timeout=self.timeout
             ) as resp:
-                if resp.status != 200:
-                    error_text = await resp.text()
-                    raise Exception(f"OpenAI API error {resp.status}: {error_text}")
-                data = await resp.json()
+                data = await self._read_json_response(resp, "OpenAI API error")
                 return _extract_image_results(data)
 
     async def edit(
@@ -246,6 +351,46 @@ class OpenAIAdapter(ImageAdapter):
         model: str = "gpt-image-1",
     ) -> list[str]:
         """Edit image(s) using an OpenAI-compatible image model. Supports multiple images."""
+        if self._is_openrouter:
+            if images and len(images) > 0:
+                source_images = images
+            elif image_bytes:
+                source_images = [(image_bytes, mime_type)]
+            else:
+                raise ValueError("No image provided for editing")
+
+            content: list[dict] = [{"type": "text", "text": prompt}]
+            for img_bytes, img_mime in source_images:
+                content.append(
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": _to_data_url(img_bytes, img_mime)},
+                    }
+                )
+
+            url = f"{self.api_url}/v1/chat/completions"
+            model = _normalize_openrouter_model(model)
+            payload = {
+                "model": model,
+                "messages": [{"role": "user", "content": content}],
+                "modalities": ["image", "text"],
+                "stream": False,
+                "image_config": {"aspect_ratio": convert_size_to_aspect_ratio(size)},
+            }
+
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    url,
+                    json=payload,
+                    headers=self._get_headers(),
+                    timeout=self.timeout,
+                ) as resp:
+                    data = await self._read_json_response(resp, "OpenRouter API error")
+                    results = _extract_image_results(data)
+                    if not results:
+                        raise Exception(f"OpenRouter API returned no image: {data}")
+                    return results
+
         url = f"{self.api_url}/v1/images/edits"
 
         form = aiohttp.FormData()
@@ -282,12 +427,7 @@ class OpenAIAdapter(ImageAdapter):
             async with session.post(
                 url, data=form, headers=headers, timeout=self.timeout
             ) as resp:
-                if resp.status != 200:
-                    error_text = await resp.text()
-                    raise Exception(
-                        f"OpenAI edit API error {resp.status}: {error_text}"
-                    )
-                data = await resp.json()
+                data = await self._read_json_response(resp, "OpenAI edit API error")
                 return _extract_image_results(data)
 
 

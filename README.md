@@ -30,8 +30,8 @@
 
 ### OpenAI 配置
 - **openai_api_key**: 必填。
-- **openai_api_url**: API 基础地址，默认为 `https://api.openai.com`。
-- **openai_model**: 图像生成模型，默认为 `gpt-image-1`。
+- **openai_api_url**: API 基础地址，默认为 `https://api.openai.com`。使用 OpenRouter 时推荐填写 `https://openrouter.ai/api`（插件会自动兼容 `https://openrouter.ai`）。
+- **openai_model**: 图像生成模型，默认为 `gpt-image-1`。使用 OpenRouter GPT-5.4 Image 2 时建议填写 `openai/gpt-5.4-image-2`（也兼容 `gpt-5.4-image2` 别名）。
 - **openai_quality**: 图像质量 (`low`, `medium`, `high`, `auto`)。
 - **openai_background**: 图像背景 (`transparent`, `opaque`, `auto`)。
 - **openai_output_format**: 输出格式 (`png`, `jpeg`, `webp`)。
@@ -104,6 +104,7 @@
 
 本插件已支持以下服务：
 - OpenAI: `gpt-image-1`
+- OpenRouter（通过 OpenAI 兼容配置）: 支持 `openai/gpt-5.4-image-2` 等图像模型，自动走 `/api/v1/chat/completions` 图像模态接口
 - Google Gemini: `imagen-3.0-generate-002`（使用 `google-genai` SDK）
 - Grok: `grok-imagine-image`（通过 xAI OpenAI 兼容 `/v1/images/generations` 与 JSON `/v1/images/edits` 接口，无需 `xai_sdk`）
 
