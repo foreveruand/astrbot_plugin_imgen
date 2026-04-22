@@ -158,6 +158,18 @@ def _is_openrouter_api_url(api_url: str) -> bool:
     return "openrouter.ai" in (urlparse(api_url).netloc or "").lower()
 
 
+def _is_official_openai_api_url(api_url: str) -> bool:
+    """Detect OpenAI official API base URL (`api.openai.com`)."""
+    normalized = (api_url or "").strip()
+    if "://" not in normalized:
+        normalized = f"https://{normalized}"
+    parsed = urlparse(normalized)
+    host = (parsed.netloc or "").lower()
+    if ":" in host:
+        host = host.split(":", 1)[0]
+    return host == "api.openai.com"
+
+
 def _normalize_openrouter_api_url(api_url: str) -> str:
     """Normalize OpenRouter base URL so downstream calls can append `/v1/...` safely."""
     parsed = urlparse(api_url)
@@ -261,7 +273,9 @@ class OpenAIAdapter(ImageAdapter):
 
     def __init__(self, api_key: str, api_url: str, timeout: int = 120):
         super().__init__(api_key=api_key, api_url=api_url, timeout=timeout)
+        self._is_official_openai = _is_official_openai_api_url(self.api_url)
         self._is_openrouter = _is_openrouter_api_url(self.api_url)
+        self._use_chat_completions = not self._is_official_openai
         if self._is_openrouter:
             self.api_url = _normalize_openrouter_api_url(self.api_url)
 
@@ -297,9 +311,10 @@ class OpenAIAdapter(ImageAdapter):
         model: str = "gpt-image-1",
     ) -> list[str]:
         """Generate image using an OpenAI-compatible image model."""
-        if self._is_openrouter:
+        if self._use_chat_completions:
             url = f"{self.api_url}/v1/chat/completions"
-            model = _normalize_openrouter_model(model)
+            if self._is_openrouter:
+                model = _normalize_openrouter_model(model)
             payload = {
                 "model": model,
                 "messages": [{"role": "user", "content": prompt}],
@@ -315,10 +330,14 @@ class OpenAIAdapter(ImageAdapter):
                     headers=self._get_headers(),
                     timeout=self.timeout,
                 ) as resp:
-                    data = await self._read_json_response(resp, "OpenRouter API error")
+                    data = await self._read_json_response(
+                        resp, "OpenAI-compatible API error"
+                    )
                     results = _extract_image_results(data)
                     if not results:
-                        raise Exception(f"OpenRouter API returned no image: {data}")
+                        raise Exception(
+                            f"OpenAI-compatible API returned no image: {data}"
+                        )
                     return results
 
         url = f"{self.api_url}/v1/images/generations"
@@ -353,7 +372,7 @@ class OpenAIAdapter(ImageAdapter):
         model: str = "gpt-image-1",
     ) -> list[str]:
         """Edit image(s) using an OpenAI-compatible image model. Supports multiple images."""
-        if self._is_openrouter:
+        if self._use_chat_completions:
             if images and len(images) > 0:
                 source_images = images
             elif image_bytes:
@@ -371,7 +390,8 @@ class OpenAIAdapter(ImageAdapter):
                 )
 
             url = f"{self.api_url}/v1/chat/completions"
-            model = _normalize_openrouter_model(model)
+            if self._is_openrouter:
+                model = _normalize_openrouter_model(model)
             payload = {
                 "model": model,
                 "messages": [{"role": "user", "content": content}],
@@ -387,10 +407,14 @@ class OpenAIAdapter(ImageAdapter):
                     headers=self._get_headers(),
                     timeout=self.timeout,
                 ) as resp:
-                    data = await self._read_json_response(resp, "OpenRouter API error")
+                    data = await self._read_json_response(
+                        resp, "OpenAI-compatible API error"
+                    )
                     results = _extract_image_results(data)
                     if not results:
-                        raise Exception(f"OpenRouter API returned no image: {data}")
+                        raise Exception(
+                            f"OpenAI-compatible API returned no image: {data}"
+                        )
                     return results
 
         url = f"{self.api_url}/v1/images/edits"
@@ -1565,7 +1589,6 @@ class Main(star.Star):
                 return "图像生成失败：未返回结果。"
 
             first_url = result_urls[0]
-            result_count = len(result_urls)
             action = "编辑" if is_editing else "生成"
 
             # Determine MIME type and base64 data

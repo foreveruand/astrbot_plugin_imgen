@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.3.6] - 2026-04-22
+
+### Changed
+
+- **OpenAI-Compatible Routing**:
+  - `OpenAIAdapter` now uses `/v1/images/generations` and `/v1/images/edits` only for the official OpenAI host (`api.openai.com`).
+  - All non-official OpenAI-compatible base URLs now use `/v1/chat/completions` image modalities for both generate and edit.
+  - Keep OpenRouter-specific URL normalization and model alias compatibility.
+
 ## [1.3.5] - 2026-04-22
 
 ### Fixed
