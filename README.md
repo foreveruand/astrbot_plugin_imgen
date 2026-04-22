@@ -114,6 +114,8 @@
   请检查当前提供商的配置是否完整。使用 Gemini Vertex AI 时，需要启用 `gemini_vertex_enabled`、填写 `gemini_vertex_project`，并上传 `gemini_vertex_credentials`，此时不需要再填写 `gemini_api_key`。
 - **绘图生成失败？**
   请检查网络连接以及 API 密钥余额，或者在日志中查看详细错误提示。
+- **报错 `Failed to download stored image: 404`？**
+  这通常表示多轮编辑缓存中的上一张图片链接已失效。新版本会在有文字描述时自动回退到仅使用 prompt 继续生成，并清理失效缓存；若需强制重置，也可在会话内执行 `clear`。
 - **Vertex AI 报 `invalid_scope`？**
   插件现在会为上传的服务账号凭证显式申请 `https://www.googleapis.com/auth/cloud-platform` scope。更新到最新版插件后重新加载即可。
 - **Grok 现在还依赖 `xai_sdk` 吗？**

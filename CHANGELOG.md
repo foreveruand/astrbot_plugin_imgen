@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.3.5] - 2026-04-22
+
+### Fixed
+
+- **Multi-turn Editing Fallback**:
+  - When the stored previous image URL cannot be downloaded (for example HTTP 404), generation no longer fails immediately.
+  - If a prompt is present, the plugin now falls back to prompt-only generation and clears the broken multi-turn cache entry.
+  - Keep explicit error behavior only when there is no prompt to fall back with.
+
 ## [1.3.4] - 2026-04-22
 
 ### Fixed

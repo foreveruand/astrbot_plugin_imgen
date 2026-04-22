@@ -271,7 +271,9 @@ class OpenAIAdapter(ImageAdapter):
             "Content-Type": "application/json",
         }
 
-    async def _read_json_response(self, resp: aiohttp.ClientResponse, error_prefix: str):
+    async def _read_json_response(
+        self, resp: aiohttp.ClientResponse, error_prefix: str
+    ):
         body = await resp.text()
         if resp.status != 200:
             raise Exception(f"{error_prefix} {resp.status}: {body}")
@@ -620,7 +622,9 @@ class GrokAdapter(ImageAdapter):
             ) as resp:
                 if resp.status != 200:
                     error_text = await resp.text()
-                    raise Exception(f"Grok generate API error {resp.status}: {error_text}")
+                    raise Exception(
+                        f"Grok generate API error {resp.status}: {error_text}"
+                    )
                 data = await resp.json()
 
         results = _extract_image_results(data)
@@ -921,63 +925,89 @@ class Main(star.Star):
                 logger.info(f"Using multi-turn editing for chat {chat_id}")
 
                 if is_url:
-                    # URL-based (Grok) - download then edit
-                    if provider == "grok":
+                    image_bytes = None
+                    mime_type = "image/png"
+                    download_failed_reason = ""
+                    try:
                         async with aiohttp.ClientSession() as session:
                             async with session.get(stored_image) as resp:
                                 if resp.status == 200:
                                     image_bytes = await resp.read()
                                     mime_type = detect_mime_type(image_bytes)
-                                    result_urls = await adapter.edit(
-                                        prompt,
-                                        image_bytes=image_bytes,
-                                        mime_type=mime_type,
-                                        model=model,
-                                        aspect_ratio=grok_aspect_ratio,
-                                    )
                                 else:
-                                    raise Exception(
-                                        f"Failed to download stored image: {resp.status}"
-                                    )
+                                    download_failed_reason = f"Failed to download stored image: {resp.status}"
+                    except Exception as err:
+                        download_failed_reason = (
+                            f"Failed to download stored image: {err}"
+                        )
+
+                    if image_bytes is not None:
+                        if provider == "grok":
+                            result_urls = await adapter.edit(
+                                prompt,
+                                image_bytes=image_bytes,
+                                mime_type=mime_type,
+                                model=model,
+                                aspect_ratio=grok_aspect_ratio,
+                            )
+                        elif provider == "gemini":
+                            result_urls = await adapter.edit(
+                                prompt,
+                                image_bytes,
+                                mime_type,
+                                image_size,
+                                model=model,
+                            )
+                        else:  # openai
+                            quality = self.config.get("openai_quality", "auto")
+                            background = self.config.get("openai_background", "auto")
+                            output_format = self.config.get(
+                                "openai_output_format", "png"
+                            )
+                            result_urls = await adapter.edit(
+                                prompt,
+                                image_bytes,
+                                mime_type,
+                                image_size,
+                                quality=quality,
+                                background=background,
+                                output_format=output_format,
+                                model=model,
+                            )
+                    elif prompt.strip():
+                        logger.warning(
+                            f"{download_failed_reason}; fallback to prompt-only generation."
+                        )
+                        await self._clear_last_image(chat_id)
+                        if provider == "gemini":
+                            result_urls = await adapter.generate(
+                                prompt, image_size, model=model
+                            )
+                        elif provider == "grok":
+                            result_urls = await adapter.generate(
+                                prompt,
+                                model=model,
+                                aspect_ratio=grok_aspect_ratio,
+                                resolution=grok_resolution,
+                                n=n,
+                            )
+                        else:  # openai
+                            quality = self.config.get("openai_quality", "auto")
+                            background = self.config.get("openai_background", "auto")
+                            output_format = self.config.get(
+                                "openai_output_format", "png"
+                            )
+                            result_urls = await adapter.generate(
+                                prompt,
+                                image_size,
+                                n=n,
+                                quality=quality,
+                                background=background,
+                                output_format=output_format,
+                                model=model,
+                            )
                     else:
-                        # For non-Grok providers with URL, download and convert
-                        async with aiohttp.ClientSession() as session:
-                            async with session.get(stored_image) as resp:
-                                if resp.status == 200:
-                                    image_bytes = await resp.read()
-                                    mime_type = detect_mime_type(image_bytes)
-                                    if provider == "gemini":
-                                        result_urls = await adapter.edit(
-                                            prompt,
-                                            image_bytes,
-                                            mime_type,
-                                            image_size,
-                                            model=model,
-                                        )
-                                    else:  # openai
-                                        quality = self.config.get(
-                                            "openai_quality", "auto"
-                                        )
-                                        background = self.config.get(
-                                            "openai_background", "auto"
-                                        )
-                                        output_format = self.config.get(
-                                            "openai_output_format", "png"
-                                        )
-                                        result_urls = await adapter.edit(
-                                            prompt,
-                                            image_bytes,
-                                            mime_type,
-                                            image_size,
-                                            quality=quality,
-                                            background=background,
-                                            output_format=output_format,
-                                            model=model,
-                                        )
-                                else:
-                                    raise Exception(
-                                        f"Failed to download stored image: {resp.status}"
-                                    )
+                        raise Exception(download_failed_reason)
                 else:
                     # Base64-based (OpenAI, Gemini)
                     image_bytes = base64.b64decode(stored_image)
@@ -1020,12 +1050,17 @@ class Main(star.Star):
                     if not b64_data:
                         continue
                     image_bytes = base64.b64decode(b64_data)
-                    processed_images.append((image_bytes, detect_mime_type(image_bytes)))
+                    processed_images.append(
+                        (image_bytes, detect_mime_type(image_bytes))
+                    )
 
                 if processed_images:
                     if provider == "gemini":
                         result_urls = await adapter.edit(
-                            prompt, images=processed_images, size=image_size, model=model
+                            prompt,
+                            images=processed_images,
+                            size=image_size,
+                            model=model,
                         )
                     elif provider == "grok":
                         result_urls = await adapter.edit(
