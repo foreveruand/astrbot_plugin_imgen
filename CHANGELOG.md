@@ -17,6 +17,7 @@ All notable changes to this project will be documented in this file.
   - Reorganize settings into second-level sections for general options, OpenAI-compatible APIs, Gemini/Imagen, and Grok/xAI.
   - Use shared provider field names (`api_key`, `model`) and drive Gemini/Grok dimensions from the common size setting.
   - Remove the configurable Grok API URL; Grok calls now use the official `https://api.x.ai` endpoint.
+  - Stop `/img` text-only sessions from automatically reusing cached history images; text-only input now always uses text-to-image unless the user explicitly uploads source images in the current session.
 
 ## [1.3.10] - 2026-04-28
 
