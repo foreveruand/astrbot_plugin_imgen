@@ -69,7 +69,9 @@ def convert_size_to_aspect_ratio(size: str) -> str:
     size_map = {
         "1024x1024": "1:1",
         "1792x1024": "16:9",
+        "1536x1024": "16:9",
         "1024x1792": "9:16",
+        "1024x1536": "9:16",
         "1280x720": "16:9",
         "720x1280": "9:16",
     }
@@ -336,6 +338,65 @@ def _normalize_grok_resolution(resolution: str | None) -> str | None:
     return resolution_map.get(value, value)
 
 
+def _is_gpt_image_model(model: str | None) -> bool:
+    """Detect GPT Image model family."""
+    normalized = (model or "").strip().lower()
+    return normalized.startswith("gpt-image-")
+
+
+def _normalize_openai_image_size(size: str | None, model: str | None) -> str:
+    """Normalize configured sizes to values accepted by OpenAI's Images API."""
+    normalized = (size or "").strip().lower() or "1024x1024"
+
+    if _is_gpt_image_model(model):
+        size_aliases = {
+            "1792x1024": "1536x1024",
+            "1024x1792": "1024x1536",
+        }
+        normalized = size_aliases.get(normalized, normalized)
+        if normalized in {"1024x1024", "1536x1024", "1024x1536", "auto"}:
+            return normalized
+        return "1024x1024"
+
+    if normalized in {"256x256", "512x512", "1024x1024"}:
+        return normalized
+    return "1024x1024"
+
+
+def _build_openai_generate_payload(
+    *,
+    prompt: str,
+    size: str,
+    n: int,
+    quality: str,
+    background: str,
+    output_format: str,
+    model: str,
+) -> dict:
+    """Build a standard OpenAI Images API request body."""
+    normalized_size = _normalize_openai_image_size(size, model)
+    payload = {
+        "model": model,
+        "prompt": prompt,
+        "n": max(1, int(n)),
+        "size": normalized_size,
+    }
+
+    if quality:
+        payload["quality"] = quality
+
+    if _is_gpt_image_model(model):
+        if background:
+            payload["background"] = background
+        if output_format:
+            payload["output_format"] = output_format
+    else:
+        if output_format == "png":
+            payload["response_format"] = "url"
+
+    return payload
+
+
 class ChatFilter(SessionFilter):
     """Session filter keyed by chat_id (chat-level scope)."""
 
@@ -462,16 +523,15 @@ class OpenAIAdapter(ImageAdapter):
                     return results
 
         url = f"{self.api_url}/v1/images/generations"
-        payload = {
-            "model": model,
-            "prompt": prompt,
-            "n": max(1, int(n)),
-            "size": size,
-            "quality": quality,
-            "background": background,
-            "output_format": output_format,
-            "response_format": "url",
-        }
+        payload = _build_openai_generate_payload(
+            prompt=prompt,
+            size=size,
+            n=n,
+            quality=quality,
+            background=background,
+            output_format=output_format,
+            model=model,
+        )
 
         async with aiohttp.ClientSession() as session:
             async with session.post(
@@ -540,15 +600,19 @@ class OpenAIAdapter(ImageAdapter):
                     return results
 
         url = f"{self.api_url}/v1/images/edits"
+        normalized_size = _normalize_openai_image_size(size, model)
 
         form = aiohttp.FormData()
         form.add_field("prompt", prompt)
         form.add_field("model", model)
-        form.add_field("size", size)
-        form.add_field("quality", quality)
-        form.add_field("background", background)
-        form.add_field("output_format", output_format)
-        form.add_field("response_format", "url")
+        form.add_field("size", normalized_size)
+        if quality:
+            form.add_field("quality", quality)
+        if _is_gpt_image_model(model):
+            if background:
+                form.add_field("background", background)
+            if output_format:
+                form.add_field("output_format", output_format)
 
         # Handle multi-image input
         if images and len(images) > 0:

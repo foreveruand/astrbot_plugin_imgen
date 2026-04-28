@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.3.10] - 2026-04-28
+
+### Fixed
+
+- **OpenAI-Compatible Images Request Body**:
+  - Align `/v1/images/generations` requests with the standard OpenAI Images API payload.
+  - Stop sending `response_format` for GPT Image models, which already return base64 output and may be rejected by stricter compatible providers.
+  - Normalize legacy `1792x1024` and `1024x1792` size inputs to `1536x1024` and `1024x1536` when calling the OpenAI Images API.
+  - Apply the same size normalization and GPT-only field filtering to `/v1/images/edits`.
+
 ## [1.3.9] - 2026-04-28
 
 ### Fixed
