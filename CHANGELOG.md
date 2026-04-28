@@ -2,6 +2,22 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.3.11] - 2026-04-28
+
+### Changed
+
+- **OpenAI-Compatible Endpoint Configuration**:
+  - Remove automatic endpoint fallback and host-based OpenRouter handling from the OpenAI adapter.
+  - Keep only the `use_completions` switch for OpenAI-compatible endpoint selection.
+  - Use fixed OpenAI-compatible paths: `/v1/chat/completions`, `/v1/images/generations`, and `/v1/images/edits`.
+  - Omit default Images API options (`quality=auto`, `background=auto`, `output_format=png`) so stricter third-party endpoints receive the same minimal payload as a direct Images API call.
+  - Normalize base64 image payloads before sending and caching to avoid `Incorrect padding` errors from unpadded provider output.
+  - Allow `gpt-image-2` to pass valid custom `size` values such as `3840x2160` and `2160x3840` through the Images API.
+  - Change the default image size setting from free text to a fixed selection menu.
+  - Reorganize settings into second-level sections for general options, OpenAI-compatible APIs, Gemini/Imagen, and Grok/xAI.
+  - Use shared provider field names (`api_key`, `model`) and drive Gemini/Grok dimensions from the common size setting.
+  - Remove the configurable Grok API URL; Grok calls now use the official `https://api.x.ai` endpoint.
+
 ## [1.3.10] - 2026-04-28
 
 ### Fixed

@@ -9,7 +9,6 @@ import re
 import time
 import uuid
 from pathlib import Path
-from urllib.parse import urlparse, urlunparse
 
 import aiohttp
 import mcp.types
@@ -67,6 +66,7 @@ async def extract_images_from_event(event) -> list[tuple[bytes, str]]:
 def convert_size_to_aspect_ratio(size: str) -> str:
     """Convert pixel size to aspect ratio."""
     size_map = {
+        "auto": "auto",
         "1024x1024": "1:1",
         "1792x1024": "16:9",
         "1536x1024": "16:9",
@@ -74,8 +74,24 @@ def convert_size_to_aspect_ratio(size: str) -> str:
         "1024x1536": "9:16",
         "1280x720": "16:9",
         "720x1280": "9:16",
+        "2048x2048": "1:1",
+        "2048x1152": "16:9",
+        "1152x2048": "9:16",
+        "3840x2160": "16:9",
+        "2160x3840": "9:16",
     }
     return size_map.get(size, "1:1")
+
+
+def convert_size_to_resolution(size: str | None) -> str:
+    """Map the shared size setting to provider 1k/2k resolution options."""
+    normalized = (size or "").strip().lower()
+    if normalized == "auto":
+        return "1k"
+    match = re.fullmatch(r"(\d+)x(\d+)", normalized)
+    if not match:
+        return "1k"
+    return "2k" if max(int(match.group(1)), int(match.group(2))) > 1536 else "1k"
 
 
 # Chinese error messages
@@ -109,9 +125,18 @@ def _encode_image_result(image_data: bytes | str) -> str:
 
 def _extract_base64_payload(image_data: str) -> str:
     """Extract raw base64 payload from a data URL or plain base64 string."""
+    if image_data.startswith("base64://"):
+        return image_data.removeprefix("base64://")
     if image_data.startswith("data:") and "," in image_data:
         return image_data.split(",", 1)[1]
     return image_data
+
+
+def _normalize_base64_payload(image_data: str) -> str:
+    """Normalize provider base64 output for AstrBot message components."""
+    payload = _extract_base64_payload(image_data)
+    payload = re.sub(r"\s+", "", payload).strip()
+    return payload + ("=" * (-len(payload) % 4))
 
 
 def _extract_image_results(payload: dict) -> list[str]:
@@ -280,34 +305,11 @@ def _extract_image_results_from_text_content(content: str) -> list[str]:
     return results
 
 
-def _is_openrouter_api_url(api_url: str) -> bool:
-    """Detect whether the configured API URL targets OpenRouter."""
-    return "openrouter.ai" in (urlparse(api_url).netloc or "").lower()
-
-
-def _normalize_openrouter_api_url(api_url: str) -> str:
-    """Normalize OpenRouter base URL so downstream calls can append `/v1/...` safely."""
-    parsed = urlparse(api_url)
-    path = (parsed.path or "").rstrip("/")
-    if path.endswith("/v1"):
-        path = path[:-3]
-    if not path:
-        path = "/api"
-    elif not path.startswith("/api"):
-        path = f"/api{path}"
-
-    return urlunparse(parsed._replace(path=path)).rstrip("/")
-
-
-def _normalize_openrouter_model(model: str) -> str:
-    """Normalize common OpenRouter model aliases/mistypes."""
-    normalized = (model or "").strip()
-    aliases = {
-        "gpt-5.4-image2": "openai/gpt-5.4-image-2",
-        "gpt-5.4-image-2": "openai/gpt-5.4-image-2",
-        "openai/gpt-5.4-image2": "openai/gpt-5.4-image-2",
-    }
-    return aliases.get(normalized, normalized)
+def _join_api_path(api_url: str, api_path: str) -> str:
+    """Join an API base URL with a path without duplicating `/v1`."""
+    base = api_url.rstrip("/")
+    path = "/" + api_path.strip("/")
+    return f"{base}{path}"
 
 
 def _to_data_url(image_bytes: bytes, mime_type: str) -> str:
@@ -344,9 +346,40 @@ def _is_gpt_image_model(model: str | None) -> bool:
     return normalized.startswith("gpt-image-")
 
 
+def _is_gpt_image_2_model(model: str | None) -> bool:
+    """Detect GPT Image 2 model family."""
+    normalized = (model or "").strip().lower()
+    return normalized.startswith("gpt-image-2")
+
+
+def _is_valid_gpt_image_2_size(size: str) -> bool:
+    """Validate custom GPT Image 2 dimensions."""
+    match = re.fullmatch(r"(\d+)x(\d+)", size)
+    if not match:
+        return False
+
+    width, height = int(match.group(1)), int(match.group(2))
+    long_edge = max(width, height)
+    short_edge = min(width, height)
+    total_pixels = width * height
+
+    return (
+        long_edge <= 3840
+        and width % 16 == 0
+        and height % 16 == 0
+        and long_edge / short_edge <= 3
+        and 655_360 <= total_pixels <= 8_294_400
+    )
+
+
 def _normalize_openai_image_size(size: str | None, model: str | None) -> str:
     """Normalize configured sizes to values accepted by OpenAI's Images API."""
     normalized = (size or "").strip().lower() or "1024x1024"
+
+    if _is_gpt_image_2_model(model):
+        if normalized == "auto" or _is_valid_gpt_image_2_size(normalized):
+            return normalized
+        return "1024x1024"
 
     if _is_gpt_image_model(model):
         size_aliases = {
@@ -382,13 +415,13 @@ def _build_openai_generate_payload(
         "size": normalized_size,
     }
 
-    if quality:
+    if quality and quality != "auto":
         payload["quality"] = quality
 
     if _is_gpt_image_model(model):
-        if background:
+        if background and background != "auto":
             payload["background"] = background
-        if output_format:
+        if output_format and output_format != "png":
             payload["output_format"] = output_format
     else:
         if output_format == "png":
@@ -453,10 +486,7 @@ class OpenAIAdapter(ImageAdapter):
         use_chat_completions: bool = True,
     ):
         super().__init__(api_key=api_key, api_url=api_url, timeout=timeout)
-        self._is_openrouter = _is_openrouter_api_url(self.api_url)
         self._use_chat_completions = use_chat_completions
-        if self._is_openrouter:
-            self.api_url = _normalize_openrouter_api_url(self.api_url)
 
     def _get_headers(self) -> dict:
         return {
@@ -493,9 +523,7 @@ class OpenAIAdapter(ImageAdapter):
     ) -> list[str]:
         """Generate image using an OpenAI-compatible image model."""
         if self._use_chat_completions:
-            url = f"{self.api_url}/v1/chat/completions"
-            if self._is_openrouter:
-                model = _normalize_openrouter_model(model)
+            url = _join_api_path(self.api_url, "/v1/chat/completions")
             payload = {
                 "model": model,
                 "messages": [{"role": "user", "content": prompt}],
@@ -522,7 +550,7 @@ class OpenAIAdapter(ImageAdapter):
                         )
                     return results
 
-        url = f"{self.api_url}/v1/images/generations"
+        url = _join_api_path(self.api_url, "/v1/images/generations")
         payload = _build_openai_generate_payload(
             prompt=prompt,
             size=size,
@@ -570,9 +598,7 @@ class OpenAIAdapter(ImageAdapter):
                     }
                 )
 
-            url = f"{self.api_url}/v1/chat/completions"
-            if self._is_openrouter:
-                model = _normalize_openrouter_model(model)
+            url = _join_api_path(self.api_url, "/v1/chat/completions")
             payload = {
                 "model": model,
                 "messages": [{"role": "user", "content": content}],
@@ -599,7 +625,7 @@ class OpenAIAdapter(ImageAdapter):
                         )
                     return results
 
-        url = f"{self.api_url}/v1/images/edits"
+        url = _join_api_path(self.api_url, "/v1/images/edits")
         normalized_size = _normalize_openai_image_size(size, model)
 
         form = aiohttp.FormData()
@@ -697,13 +723,19 @@ class GeminiAdapter(ImageAdapter):
     ) -> list[str]:
         """Generate image from text prompt using google-genai SDK."""
         aspect_ratio = convert_size_to_aspect_ratio(size)
+        image_size = convert_size_to_resolution(size).upper()
 
         config = types.GenerateContentConfig(
             response_modalities=["IMAGE"],
         )
 
-        if aspect_ratio != "1:1":
-            config.image_config = types.ImageConfig(aspect_ratio=aspect_ratio)
+        image_config_kwargs = {}
+        if aspect_ratio not in {"1:1", "auto"}:
+            image_config_kwargs["aspect_ratio"] = aspect_ratio
+        if image_size != "1K":
+            image_config_kwargs["image_size"] = image_size
+        if image_config_kwargs:
+            config.image_config = types.ImageConfig(**image_config_kwargs)
 
         try:
             response = await self.client.aio.models.generate_content(
@@ -738,6 +770,7 @@ class GeminiAdapter(ImageAdapter):
     ) -> list[str]:
         """Edit image(s) with text prompt using google-genai SDK. Supports multiple images."""
         aspect_ratio = convert_size_to_aspect_ratio(size)
+        image_size = convert_size_to_resolution(size).upper()
 
         # Build content parts - all images followed by text prompt
         content_parts = []
@@ -760,8 +793,13 @@ class GeminiAdapter(ImageAdapter):
             response_modalities=["IMAGE"],
         )
 
-        if aspect_ratio != "1:1":
-            config.image_config = types.ImageConfig(aspect_ratio=aspect_ratio)
+        image_config_kwargs = {}
+        if aspect_ratio not in {"1:1", "auto"}:
+            image_config_kwargs["aspect_ratio"] = aspect_ratio
+        if image_size != "1K":
+            image_config_kwargs["image_size"] = image_size
+        if image_config_kwargs:
+            config.image_config = types.ImageConfig(**image_config_kwargs)
 
         try:
             response = await self.client.aio.models.generate_content(
@@ -936,26 +974,63 @@ class Main(star.Star):
 
         return str((self._get_plugin_data_dir() / candidate).resolve(strict=False))
 
+    def _config_get(self, section: str, key: str, default=None):
+        """Read nested plugin config."""
+        section_data = self.config.get(section, {})
+        if isinstance(section_data, dict) and key in section_data:
+            return section_data.get(key, default)
+        return default
+
+    def _general_config(self, key: str, default=None):
+        return self._config_get("general_config", key, default)
+
+    def _openai_config(self, key: str, default=None):
+        return self._config_get("openai_config", key, default)
+
+    def _gemini_config(self, key: str, default=None):
+        return self._config_get("gemini_config", key, default)
+
+    def _grok_config(self, key: str, default=None):
+        return self._config_get("grok_config", key, default)
+
+    def _provider_model(self, provider: str) -> str:
+        """Return configured model for a provider."""
+        if provider == "openai":
+            return self._openai_config("model", "gpt-image-1")
+        if provider == "gemini":
+            return self._gemini_config("model", "imagen-3.0-generate-002")
+        if provider == "grok":
+            return self._grok_config("model", "grok-imagine-image")
+        return ""
+
+    def _openai_output_options(self) -> tuple[str, str, str]:
+        """Return OpenAI Images API output options."""
+        return (
+            self._openai_config("quality", "auto"),
+            self._openai_config("background", "auto"),
+            self._openai_config("output_format", "png"),
+        )
+
     def _is_provider_configured(self, provider: str) -> bool:
         """Check whether the current provider has the required credentials."""
-        if provider == "gemini" and self.config.get("gemini_vertex_enabled"):
-            credentials_files = self.config.get("gemini_vertex_credentials", [])
+        if provider == "gemini" and self._gemini_config("vertex_enabled", False):
+            credentials_files = self._gemini_config("vertex_credentials", [])
             credentials_path = self._resolve_plugin_data_file(
                 credentials_files[0] if credentials_files else None
             )
             return bool(
                 credentials_path
                 and os.path.isfile(credentials_path)
-                and self.config.get("gemini_vertex_project", "").strip()
+                and self._gemini_config("vertex_project", "").strip()
             )
 
-        api_key_map = {
-            "openai": ("openai_api_key", "api_key"),
-            "gemini": ("gemini_api_key", "api_key"),
-            "grok": ("grok_api_key", "api_key"),
-        }
-        primary_key, fallback_key = api_key_map.get(provider, ("api_key", "api_key"))
-        return bool(self.config.get(primary_key) or self.config.get(fallback_key))
+        if provider == "openai":
+            return bool(self._openai_config("api_key", ""))
+        if provider == "gemini":
+            return bool(self._gemini_config("api_key", ""))
+        if provider == "grok":
+            return bool(self._grok_config("api_key", ""))
+        return False
 
     async def _send_image_output(
         self, event: AstrMessageEvent, image_data: str, mime_type: str = "image/png"
@@ -965,52 +1040,41 @@ class Main(star.Star):
             await event.send(event.image_result(image_data))
             return
 
-        image_b64 = _extract_base64_payload(image_data)
+        image_b64 = _normalize_base64_payload(image_data)
         await event.send(event.chain_result([Comp.Image.fromBase64(image_b64)]))
 
     def _get_adapter(self, provider: str) -> ImageAdapter:
         """Get the appropriate adapter for the provider."""
-        timeout = self.config.get("timeout", 120)
+        timeout = self._general_config("timeout", 120)
 
         if provider == "openai":
-            api_key = self.config.get("openai_api_key") or self.config.get(
-                "api_key", ""
-            )
-            api_url = self.config.get("openai_api_url") or self.config.get(
-                "api_url", "https://api.openai.com"
-            )
+            api_key = self._openai_config("api_key", "")
+            api_url = self._openai_config("api_url", "https://api.openai.com")
             return OpenAIAdapter(
                 api_key,
                 api_url,
                 timeout,
-                self.config.get("openai_use_completions", True),
+                self._openai_config("use_completions", True),
             )
         elif provider == "gemini":
-            api_key = self.config.get("gemini_api_key") or self.config.get(
-                "api_key", ""
-            )
+            api_key = self._gemini_config("api_key", "")
             # Vertex AI configuration
             vertex_config = None
-            if self.config.get("gemini_vertex_enabled"):
-                credentials_files = self.config.get("gemini_vertex_credentials", [])
+            if self._gemini_config("vertex_enabled", False):
+                credentials_files = self._gemini_config("vertex_credentials", [])
                 credentials_path = self._resolve_plugin_data_file(
                     credentials_files[0] if credentials_files else None
                 )
                 vertex_config = {
                     "enabled": True,
                     "credentials_path": credentials_path,
-                    "project": self.config.get("gemini_vertex_project", ""),
-                    "location": self.config.get(
-                        "gemini_vertex_location", "us-central1"
-                    ),
+                    "project": self._gemini_config("vertex_project", ""),
+                    "location": self._gemini_config("vertex_location", "us-central1"),
                 }
             return GeminiAdapter(api_key, timeout, vertex_config=vertex_config)
         elif provider == "grok":
-            api_key = self.config.get("grok_api_key") or self.config.get("api_key", "")
-            api_url = self.config.get("grok_api_url") or self.config.get(
-                "api_url", "https://api.x.ai"
-            )
-            return GrokAdapter(api_key, api_url, timeout)
+            api_key = self._grok_config("api_key", "")
+            return GrokAdapter(api_key, "https://api.x.ai", timeout)
         else:
             raise ValueError(f"Unknown provider: {provider}")
 
@@ -1070,7 +1134,7 @@ class Main(star.Star):
             await event.send(event.plain_result(ERROR_MESSAGES["no_prompt"]))
             return False
 
-        provider = self.config.get("default_provider", "openai")
+        provider = self._general_config("default_provider", "openai")
 
         if not self._is_provider_configured(provider):
             await event.send(event.plain_result(ERROR_MESSAGES["no_api_key"]))
@@ -1087,7 +1151,7 @@ class Main(star.Star):
             return False
 
         # Add persona prompt if configured
-        default_persona = self.config.get("default_persona", "")
+        default_persona = self._general_config("default_persona", "")
         if default_persona:
             persona = await self.context.persona_manager.get_persona(default_persona)
             if persona and hasattr(persona, "system_prompt") and persona.system_prompt:
@@ -1098,26 +1162,21 @@ class Main(star.Star):
                 )
 
         try:
-            image_size = size or self.config.get("default_size", "1024x1024")
+            image_size = size or self._general_config("default_size", "1024x1024")
 
             # Get provider-specific model
-            model_map = {
-                "openai": self.config.get("openai_model", "gpt-image-1"),
-                "gemini": self.config.get("gemini_model", "imagen-3.0-generate-002"),
-                "grok": self.config.get("grok_model", "grok-imagine-image"),
-            }
-            model = model_map.get(provider, "")
+            model = self._provider_model(provider)
 
             # Get provider-specific settings
             aspect_ratio = convert_size_to_aspect_ratio(image_size)
             grok_aspect_ratio = aspect_ratio
-            configured_grok_aspect_ratio = self.config.get("grok_aspect_ratio", "")
-            if not size and configured_grok_aspect_ratio:
-                grok_aspect_ratio = configured_grok_aspect_ratio
-            grok_resolution = self.config.get("grok_resolution", "1k")
+            grok_resolution = convert_size_to_resolution(image_size)
+            openai_quality, openai_background, openai_output_format = (
+                self._openai_output_options()
+            )
 
             # Multi-turn editing: check for last_image in KV storage
-            enable_multi_turn = self.config.get("enable_multi_turn", True)
+            enable_multi_turn = self._general_config("enable_multi_turn", True)
             last_image_data = None
             if enable_multi_turn and not images:
                 last_image_data = await self._get_last_image(chat_id)
@@ -1174,19 +1233,14 @@ class Main(star.Star):
                                 model=model,
                             )
                         else:  # openai
-                            quality = self.config.get("openai_quality", "auto")
-                            background = self.config.get("openai_background", "auto")
-                            output_format = self.config.get(
-                                "openai_output_format", "png"
-                            )
                             result_urls = await adapter.edit(
                                 prompt,
                                 image_bytes,
                                 mime_type,
                                 image_size,
-                                quality=quality,
-                                background=background,
-                                output_format=output_format,
+                                quality=openai_quality,
+                                background=openai_background,
+                                output_format=openai_output_format,
                                 model=model,
                             )
                     elif prompt.strip():
@@ -1207,25 +1261,22 @@ class Main(star.Star):
                                 n=n,
                             )
                         else:  # openai
-                            quality = self.config.get("openai_quality", "auto")
-                            background = self.config.get("openai_background", "auto")
-                            output_format = self.config.get(
-                                "openai_output_format", "png"
-                            )
                             result_urls = await adapter.generate(
                                 prompt,
                                 image_size,
                                 n=n,
-                                quality=quality,
-                                background=background,
-                                output_format=output_format,
+                                quality=openai_quality,
+                                background=openai_background,
+                                output_format=openai_output_format,
                                 model=model,
                             )
                     else:
                         raise Exception(download_failed_reason)
                 else:
                     # Base64-based (OpenAI, Gemini)
-                    image_bytes = base64.b64decode(stored_image)
+                    image_bytes = base64.b64decode(
+                        _normalize_base64_payload(stored_image)
+                    )
                     mime_type = stored_mime
                     if provider == "gemini":
                         result_urls = await adapter.edit(
@@ -1233,7 +1284,9 @@ class Main(star.Star):
                         )
                     elif provider == "grok":
                         # Grok now uses bytes directly
-                        image_bytes = base64.b64decode(stored_image)
+                        image_bytes = base64.b64decode(
+                            _normalize_base64_payload(stored_image)
+                        )
                         result_urls = await adapter.edit(
                             prompt,
                             image_bytes=image_bytes,
@@ -1242,17 +1295,14 @@ class Main(star.Star):
                             aspect_ratio=grok_aspect_ratio,
                         )
                     else:  # openai
-                        quality = self.config.get("openai_quality", "auto")
-                        background = self.config.get("openai_background", "auto")
-                        output_format = self.config.get("openai_output_format", "png")
                         result_urls = await adapter.edit(
                             prompt,
                             image_bytes,
                             mime_type,
                             image_size,
-                            quality=quality,
-                            background=background,
-                            output_format=output_format,
+                            quality=openai_quality,
+                            background=openai_background,
+                            output_format=openai_output_format,
                             model=model,
                         )
             elif images:
@@ -1285,16 +1335,13 @@ class Main(star.Star):
                             aspect_ratio=grok_aspect_ratio,
                         )
                     else:  # openai
-                        quality = self.config.get("openai_quality", "auto")
-                        background = self.config.get("openai_background", "auto")
-                        output_format = self.config.get("openai_output_format", "png")
                         result_urls = await adapter.edit(
                             prompt,
                             images=processed_images,
                             size=image_size,
-                            quality=quality,
-                            background=background,
-                            output_format=output_format,
+                            quality=openai_quality,
+                            background=openai_background,
+                            output_format=openai_output_format,
                             model=model,
                         )
                 else:
@@ -1311,16 +1358,13 @@ class Main(star.Star):
                             n=n,
                         )
                     else:  # openai
-                        quality = self.config.get("openai_quality", "auto")
-                        background = self.config.get("openai_background", "auto")
-                        output_format = self.config.get("openai_output_format", "png")
                         result_urls = await adapter.generate(
                             prompt,
                             image_size,
                             n=n,
-                            quality=quality,
-                            background=background,
-                            output_format=output_format,
+                            quality=openai_quality,
+                            background=openai_background,
+                            output_format=openai_output_format,
                             model=model,
                         )
             else:
@@ -1338,16 +1382,13 @@ class Main(star.Star):
                         n=n,
                     )
                 else:  # openai
-                    quality = self.config.get("openai_quality", "auto")
-                    background = self.config.get("openai_background", "auto")
-                    output_format = self.config.get("openai_output_format", "png")
                     result_urls = await adapter.generate(
                         prompt,
                         image_size,
                         n=n,
-                        quality=quality,
-                        background=background,
-                        output_format=output_format,
+                        quality=openai_quality,
+                        background=openai_background,
+                        output_format=openai_output_format,
                         model=model,
                     )
 
@@ -1361,7 +1402,9 @@ class Main(star.Star):
                 is_url = first_result.startswith("http")
                 await self._store_last_image(
                     chat_id=chat_id,
-                    image_data=first_result if is_url else first_result,
+                    image_data=first_result
+                    if is_url
+                    else _normalize_base64_payload(first_result),
                     provider=provider,
                     model=model,
                     prompt=prompt,
@@ -1458,13 +1501,12 @@ class Main(star.Star):
         if initial_prompt:
             msg += f"已记录描述: {initial_prompt}\n"
         msg += "请发送图片或文字描述，完成后使用 /generate 生成，或 /cancel 取消。\n"
-        msg += f"⏰ 会话将在 {self.config.get('session_timeout', 300) // 60} 分钟后自动超时。"
+        session_timeout = self._general_config("session_timeout", 300)
+        msg += f"⏰ 会话将在 {session_timeout // 60} 分钟后自动超时。"
         yield event.plain_result(msg)
 
         # Session waiter
-        @session_waiter(
-            timeout=self.config.get("session_timeout", 300), record_history_chains=False
-        )
+        @session_waiter(timeout=session_timeout, record_history_chains=False)
         async def img_waiter(controller: SessionController, event: AstrMessageEvent):
             # Refresh session data
             session_data = self.ACTIVE_SESSIONS.get(chat_id, {})
@@ -1516,7 +1558,7 @@ class Main(star.Star):
                     await event.send(
                         event.plain_result(ERROR_MESSAGES["no_multi_turn_history"])
                     )
-                controller.keep(timeout=self.config.get("session_timeout", 300))
+                controller.keep(timeout=session_timeout)
                 return
 
             # Collect text
@@ -1543,7 +1585,7 @@ class Main(star.Star):
                 event.plain_result(f"已记录: 文字({text_preview}) 图片({img_count}张)")
             )
 
-            controller.keep(timeout=self.config.get("session_timeout", 300))
+            controller.keep(timeout=session_timeout)
 
         try:
             await img_waiter(event, session_filter=ChatFilter())
@@ -1616,7 +1658,9 @@ class Main(star.Star):
                 match = re.match(r"data:image/(\w+);base64,(.+)", image_input)
                 if match:
                     mime_type = f"image/{match.group(1)}"
-                    image_bytes = base64.b64decode(match.group(2))
+                    image_bytes = base64.b64decode(
+                        _normalize_base64_payload(match.group(2))
+                    )
                     return image_bytes, mime_type
                 else:
                     logger.warning("Invalid base64 data URL format")
@@ -1647,7 +1691,7 @@ class Main(star.Star):
 
             # 尝试作为 base64 字符串处理（无 data: 前缀）
             try:
-                image_bytes = base64.b64decode(image_input)
+                image_bytes = base64.b64decode(_normalize_base64_payload(image_input))
                 mime_type = detect_mime_type(image_bytes)
                 return image_bytes, mime_type
             except Exception:
@@ -1679,10 +1723,10 @@ class Main(star.Star):
         )
 
         # Use default provider from config
-        provider = self.config.get("default_provider", "openai")
+        provider = self._general_config("default_provider", "openai")
 
         if not self._is_provider_configured(provider):
-            if provider == "gemini" and self.config.get("gemini_vertex_enabled"):
+            if provider == "gemini" and self._gemini_config("vertex_enabled", False):
                 return "错误：未配置可用的 Vertex AI 凭证或项目 ID，请检查上传的 JSON 文件和 Vertex 配置。"
             return f"错误：未配置 {provider} 的 API 密钥，请在插件设置中配置。"
 
@@ -1692,20 +1736,13 @@ class Main(star.Star):
             return f"错误：{str(e)}"
 
         try:
-            model_map = {
-                "openai": self.config.get("openai_model", "gpt-image-1"),
-                "gemini": self.config.get("gemini_model", "imagen-3.0-generate-002"),
-                "grok": self.config.get("grok_model", "grok-imagine-image"),
-            }
-            model = model_map.get(provider, "")
+            model = self._provider_model(provider)
             aspect_ratio = convert_size_to_aspect_ratio(size)
             grok_aspect_ratio = aspect_ratio
-            configured_grok_aspect_ratio = self.config.get("grok_aspect_ratio", "")
-            if configured_grok_aspect_ratio and size == self.config.get(
-                "default_size", "1024x1024"
-            ):
-                grok_aspect_ratio = configured_grok_aspect_ratio
-            grok_resolution = self.config.get("grok_resolution", "1k")
+            grok_resolution = convert_size_to_resolution(size)
+            openai_quality, openai_background, openai_output_format = (
+                self._openai_output_options()
+            )
 
             # Process images list if provided
             processed_images = []
@@ -1743,16 +1780,13 @@ class Main(star.Star):
                         prompt, images=processed_images, size=size, model=model
                     )
                 else:  # openai
-                    quality = self.config.get("openai_quality", "auto")
-                    background = self.config.get("openai_background", "auto")
-                    output_format = self.config.get("openai_output_format", "png")
                     result_urls = await adapter.edit(
                         prompt,
                         images=processed_images,
                         size=size,
-                        quality=quality,
-                        background=background,
-                        output_format=output_format,
+                        quality=openai_quality,
+                        background=openai_background,
+                        output_format=openai_output_format,
                         model=model,
                     )
             else:
@@ -1771,15 +1805,12 @@ class Main(star.Star):
                         resolution=grok_resolution,
                     )
                 else:  # openai
-                    quality = self.config.get("openai_quality", "auto")
-                    background = self.config.get("openai_background", "auto")
-                    output_format = self.config.get("openai_output_format", "png")
                     result_urls = await adapter.generate(
                         prompt,
                         size,
-                        quality=quality,
-                        background=background,
-                        output_format=output_format,
+                        quality=openai_quality,
+                        background=openai_background,
+                        output_format=openai_output_format,
                         model=model,
                     )
 
@@ -1806,15 +1837,15 @@ class Main(star.Star):
                 match = re.match(r"data:image/(\w+);base64,(.+)", first_url)
                 if match:
                     mime_type = f"image/{match.group(1)}"
-                    image_b64 = match.group(2)
+                    image_b64 = _normalize_base64_payload(match.group(2))
                 else:
                     mime_type = "image/png"
-                    image_b64 = first_url
+                    image_b64 = _normalize_base64_payload(first_url)
                 # Send to user
                 # await self._send_image_output(event, first_url, mime_type)
             else:
                 mime_type = "image/png"
-                image_b64 = first_url
+                image_b64 = _normalize_base64_payload(first_url)
                 # Send to user
                 # await self._send_image_output(event, first_url, mime_type)
 

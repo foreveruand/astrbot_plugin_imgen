@@ -18,43 +18,42 @@
 
 ## 配置指南
 
-在插件设置中，请根据您的提供商配置以下参数：
+插件设置按二级菜单分区。请根据您的提供商配置以下参数：
 
 ### 通用配置
 - **default_provider**: 默认生成服务，可选 `openai`, `gemini`, `grok`。
-- **default_size**: 图片分辨率（例如 `1024x1024`）。
+- **default_size**: 默认图片分辨率，可在设置中选择 `auto`、常用 1K/2K/4K 尺寸。OpenAI 使用像素级 `size`；Gemini/Grok 会映射为各自支持的宽高比和 1K/2K 分辨率参数。
 - **session_timeout**: 会话超时时间，默认 300 秒。
 - **max_images**: 单次会话支持的最大输入图片数。
 - **enable_multi_turn**: 是否启用多轮编辑（默认启用）。
 - **default_persona**: 默认人格。
 
-### OpenAI 配置
-- **openai_api_key**: 必填。
-- **openai_api_url**: API 基础地址，默认为 `https://api.openai.com`。插件会基于该地址拼接标准的 `/v1/...` 路径；使用 OpenRouter 时推荐填写 `https://openrouter.ai/api`（插件会自动兼容 `https://openrouter.ai`）。
-- **openai_model**: 图像生成模型，默认为 `gpt-image-1`。使用 OpenRouter GPT-5.4 Image 2 时建议填写 `openai/gpt-5.4-image-2`（也兼容 `gpt-5.4-image2` 别名）。
-- **openai_use_completions**: 是否使用 `/v1/chat/completions` 图像模态接口（默认开启）。关闭后改用 `/v1/images/generations` 和 `/v1/images/edits`。
-- **OpenAI Images API 兼容说明**: 当关闭 `openai_use_completions` 且使用 `gpt-image-*` 模型时，插件会按 OpenAI 标准请求体发送 `model`、`prompt`、`n`、`size`、`quality`、`background`、`output_format`，不会再发送 `response_format`。旧尺寸 `1792x1024` / `1024x1792` 会自动规范化为 `1536x1024` / `1024x1536`。
-- **openai_quality**: 图像质量 (`low`, `medium`, `high`, `auto`)。
-- **openai_background**: 图像背景 (`transparent`, `opaque`, `auto`)。
-- **openai_output_format**: 输出格式 (`png`, `jpeg`, `webp`)。
+### OpenAI 兼容接口
+- **api_key**: 必填。
+- **api_url**: API 基础地址，默认为 `https://api.openai.com`。
+- **model**: 图像生成模型，默认为 `gpt-image-1`。使用第三方兼容服务时请填写该服务要求的完整模型名。
+- **use_completions**: 是否使用 `/v1/chat/completions` 图像模态接口（默认开启）。关闭后使用 `/v1/images/generations` 和 `/v1/images/edits`。
+- **OpenAI Images API 兼容说明**: 当关闭 `use_completions` 且使用 `gpt-image-*` 模型时，插件会按 OpenAI 标准请求体发送 `model`、`prompt`、`n`、`size`，并仅在非默认值时发送 `quality`、`background`、`output_format`，不会再发送 `response_format`。旧尺寸 `1792x1024` / `1024x1792` 会自动规范化为 `1536x1024` / `1024x1536`。
+- **gpt-image-2 尺寸说明**: 4K 直接通过 `size` 传递，例如 `3840x2160` 或 `2160x3840`。宽高都必须是 16 的倍数，最长边不超过 3840，长短边比例不超过 3:1，总像素不超过 8,294,400。
+- **quality**: 图像质量 (`low`, `medium`, `high`, `auto`)。
+- **background**: 图像背景 (`transparent`, `opaque`, `auto`)。
+- **output_format**: 输出格式 (`png`, `jpeg`, `webp`)。
 
-### Gemini 配置
-- **gemini_api_key**: 必填（未启用 Vertex AI 时）。
-- **gemini_model**: 生成模型，默认为 `imagen-3.0-generate-002`。
-- **gemini_aspect_ratio**: 宽高比 (`1:1`, `16:9`, `9:16`, `4:3`, `3:4`)。
+### Gemini / Imagen
+- **api_key**: 必填（未启用 Vertex AI 时）。
+- **model**: 生成模型，默认为 `imagen-3.0-generate-002`。
+- **尺寸映射**: Gemini API 不使用 OpenAI 的像素级 `size`。插件会把通用 `default_size` 映射为 Gemini 的 `aspectRatio`，并在 2K/4K 选项下传递 `imageSize=2K`（Gemini/Imagen 官方仅列出 1K/2K）。
 
 #### Vertex AI 配置（可选）
-- **gemini_vertex_enabled**: 启用 Vertex AI。
-- **gemini_vertex_credentials**: 服务账号 JSON 凭证文件。
-- **gemini_vertex_project**: Google Cloud 项目 ID。
-- **gemini_vertex_location**: Vertex AI 区域（默认 `us-central1`）。
+- **vertex_enabled**: 启用 Vertex AI。
+- **vertex_credentials**: 服务账号 JSON 凭证文件。
+- **vertex_project**: Google Cloud 项目 ID。
+- **vertex_location**: Vertex AI 区域（默认 `us-central1`）。
 
-### Grok 配置
-- **grok_api_key**: 必填。
-- **grok_api_url**: xAI API 基础地址，默认为 `https://api.x.ai`。
-- **grok_model**: 生成模型，默认为 `grok-imagine-image`。
-- **grok_aspect_ratio**: 默认宽高比 (`1:1`, `16:9`, `9:16`, `4:3`, `3:4`, `3:2`, `2:3`, `auto`)。
-- **grok_resolution**: 输出分辨率，支持 `1k`、`2k`。
+### Grok / xAI
+- **api_key**: 必填。
+- **model**: 生成模型，默认为 `grok-imagine-image`。Grok API 地址固定为 `https://api.x.ai`。
+- **尺寸映射**: xAI 使用 `aspect_ratio` 和 `resolution`，不使用 OpenAI 的像素级 `size`。插件会从通用 `default_size` 自动映射宽高比，并将 2K/4K 选项映射为 `resolution=2k`。
 
 ## 使用说明
 
@@ -106,14 +105,14 @@
 
 本插件已支持以下服务：
 - OpenAI: `gpt-image-1`
-- OpenRouter（通过 OpenAI 兼容配置）: 支持 `openai/gpt-5.4-image-2` 等图像模型，自动走 `/api/v1/chat/completions` 图像模态接口
+- OpenRouter（通过 OpenAI 兼容配置）: 支持 `openai/gpt-5.4-image-2` 等图像模型。请在 OpenAI 兼容接口分区将 `api_url` 配为 `https://openrouter.ai/api`，并保持 `use_completions` 开启。
 - Google Gemini: `imagen-3.0-generate-002`（使用 `google-genai` SDK）
 - Grok: `grok-imagine-image`（通过 xAI OpenAI 兼容 `/v1/images/generations` 与 JSON `/v1/images/edits` 接口，无需 `xai_sdk`）
 
 ## 常见问题
 
 - **提示“未配置 API 密钥”？**
-  请检查当前提供商的配置是否完整。使用 Gemini Vertex AI 时，需要启用 `gemini_vertex_enabled`、填写 `gemini_vertex_project`，并上传 `gemini_vertex_credentials`，此时不需要再填写 `gemini_api_key`。
+  请检查当前提供商的配置是否完整。使用 Gemini Vertex AI 时，需要启用 `vertex_enabled`、填写 `vertex_project`，并上传 `vertex_credentials`，此时不需要再填写 `api_key`。
 - **绘图生成失败？**
   请检查网络连接以及 API 密钥余额，或者在日志中查看详细错误提示。
 - **报错 `Failed to download stored image: 404`？**
