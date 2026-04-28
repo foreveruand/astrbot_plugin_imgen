@@ -55,6 +55,12 @@
         "type": "string",
         "default": "gpt-image-1"
     },
+    "openai_use_completions": {
+        "description": "OpenAI 接口是否使用 /v1/chat/completions",
+        "hint": "关闭后将改用 /v1/images/generations 与 /v1/images/edits",
+        "type": "bool",
+        "default": true
+    },
     "openai_quality": {
         "description": "OpenAI 图像质量",
         "hint": "图像质量设置",

@@ -30,8 +30,9 @@
 
 ### OpenAI 配置
 - **openai_api_key**: 必填。
-- **openai_api_url**: API 基础地址，默认为 `https://api.openai.com`。仅官方地址使用 `/v1/images/*` 接口；其他 OpenAI 兼容地址统一使用 `/v1/chat/completions` 图像模态。使用 OpenRouter 时推荐填写 `https://openrouter.ai/api`（插件会自动兼容 `https://openrouter.ai`）。
+- **openai_api_url**: API 基础地址，默认为 `https://api.openai.com`。插件会基于该地址拼接标准的 `/v1/...` 路径；使用 OpenRouter 时推荐填写 `https://openrouter.ai/api`（插件会自动兼容 `https://openrouter.ai`）。
 - **openai_model**: 图像生成模型，默认为 `gpt-image-1`。使用 OpenRouter GPT-5.4 Image 2 时建议填写 `openai/gpt-5.4-image-2`（也兼容 `gpt-5.4-image2` 别名）。
+- **openai_use_completions**: 是否使用 `/v1/chat/completions` 图像模态接口（默认开启）。关闭后改用 `/v1/images/generations` 和 `/v1/images/edits`。
 - **openai_quality**: 图像质量 (`low`, `medium`, `high`, `auto`)。
 - **openai_background**: 图像背景 (`transparent`, `opaque`, `auto`)。
 - **openai_output_format**: 输出格式 (`png`, `jpeg`, `webp`)。

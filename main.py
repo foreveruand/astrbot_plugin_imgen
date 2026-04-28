@@ -283,18 +283,6 @@ def _is_openrouter_api_url(api_url: str) -> bool:
     return "openrouter.ai" in (urlparse(api_url).netloc or "").lower()
 
 
-def _is_official_openai_api_url(api_url: str) -> bool:
-    """Detect OpenAI official API base URL (`api.openai.com`)."""
-    normalized = (api_url or "").strip()
-    if "://" not in normalized:
-        normalized = f"https://{normalized}"
-    parsed = urlparse(normalized)
-    host = (parsed.netloc or "").lower()
-    if ":" in host:
-        host = host.split(":", 1)[0]
-    return host == "api.openai.com"
-
-
 def _normalize_openrouter_api_url(api_url: str) -> str:
     """Normalize OpenRouter base URL so downstream calls can append `/v1/...` safely."""
     parsed = urlparse(api_url)
@@ -396,11 +384,16 @@ class ImageAdapter:
 class OpenAIAdapter(ImageAdapter):
     """OpenAI image generation adapter for gpt-image-1 model."""
 
-    def __init__(self, api_key: str, api_url: str, timeout: int = 120):
+    def __init__(
+        self,
+        api_key: str,
+        api_url: str,
+        timeout: int = 120,
+        use_chat_completions: bool = True,
+    ):
         super().__init__(api_key=api_key, api_url=api_url, timeout=timeout)
-        self._is_official_openai = _is_official_openai_api_url(self.api_url)
         self._is_openrouter = _is_openrouter_api_url(self.api_url)
-        self._use_chat_completions = not self._is_official_openai
+        self._use_chat_completions = use_chat_completions
         if self._is_openrouter:
             self.api_url = _normalize_openrouter_api_url(self.api_url)
 
@@ -922,7 +915,12 @@ class Main(star.Star):
             api_url = self.config.get("openai_api_url") or self.config.get(
                 "api_url", "https://api.openai.com"
             )
-            return OpenAIAdapter(api_key, api_url, timeout)
+            return OpenAIAdapter(
+                api_key,
+                api_url,
+                timeout,
+                self.config.get("openai_use_completions", True),
+            )
         elif provider == "gemini":
             api_key = self.config.get("gemini_api_key") or self.config.get(
                 "api_key", ""

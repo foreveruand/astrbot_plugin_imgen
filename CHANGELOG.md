@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.3.9] - 2026-04-28
+
+### Fixed
+
+- **OpenAI-Compatible Endpoint Selection**:
+  - Fix OpenAI generate requests to keep the required `/v1/...` prefix for both `/v1/chat/completions` and `/v1/images/generations`.
+  - Keep OpenRouter base URL normalization compatible with the restored `/api/v1/...` request path.
+  - Fix the new `openai_use_completions` config schema to use a real boolean default.
+
+### Added
+
+- **OpenAI Configuration**:
+  - Add `openai_use_completions` documentation to clarify how to switch between chat-completions image mode and the classic images endpoints.
+
 ## [1.3.8] - 2026-04-22
 
 ### Fixed
