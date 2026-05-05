@@ -96,9 +96,10 @@
   - HTTP/HTTPS URL: `https://example.com/image.png`
   - Base64 Data URL: `data:image/png;base64,...`
   - 纯 Base64 字符串
-- `size` (可选): 图像尺寸，默认 1024x1024
+- `size` (可选): 图像尺寸；未传入时默认使用插件设置中的 `default_size`
+- `provider` (可选): 指定绘图提供商，可选 `openai`、`gemini`、`grok`
 
-使用默认提供商配置，无需在工具中指定提供商。
+工具调用默认使用设置中的 `default_provider`。如果 LLM 显式传入 `provider`，插件会优先尝试该渠道；若该渠道缺少必要配置，则自动回退到 `default_provider`。
 
 ## 支持的 API 服务
 

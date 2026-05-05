@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.3.12] - 2026-05-05
+
+### Changed
+
+- **`generate_image` Tool Provider Override**:
+  - Add an optional `provider` argument to the `generate_image` LLM tool so the model can override `default_provider` per call.
+  - Fall back to the configured `default_provider` when the requested provider is invalid or missing required credentials.
+  - Change the tool's default `size` behavior to use the plugin setting `default_size` instead of hardcoding `1024x1024`, while still allowing per-call overrides from the LLM.
+
 ## [1.3.11] - 2026-04-28
 
 ### Changed

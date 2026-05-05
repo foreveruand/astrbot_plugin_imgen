@@ -1032,6 +1032,24 @@ class Main(star.Star):
             return bool(self._grok_config("api_key", ""))
         return False
 
+    def _resolve_tool_provider(self, requested_provider: str | None) -> str:
+        """Resolve the provider for tool calls with fallback to the configured default."""
+        default_provider = self._general_config("default_provider", "openai")
+        normalized_provider = (requested_provider or "").strip().lower()
+
+        if normalized_provider not in {"openai", "gemini", "grok"}:
+            return default_provider
+
+        if self._is_provider_configured(normalized_provider):
+            return normalized_provider
+
+        logger.info(
+            "Requested provider %s is not fully configured; falling back to default provider %s.",
+            normalized_provider,
+            default_provider,
+        )
+        return default_provider
+
     async def _send_image_output(
         self, event: AstrMessageEvent, image_data: str, mime_type: str = "image/png"
     ) -> None:
@@ -1580,38 +1598,46 @@ class Main(star.Star):
         event: AstrMessageEvent,
         prompt: str,
         images: list | None = None,
-        size: str = "1024x1024",
+        size: str | None = None,
+        provider: str | None = None,
     ) -> str:
         """生成或编辑图像。当用户请求生成图片、画图、创建图像或编辑图片时使用此工具。
 
         Args:
             prompt(string): 图像生成的详细描述，描述要生成的图像内容。
             images(array[string]): 可选。要编辑的图片列表，支持URL、本地路径、base64。如果提供，将对图片进行编辑；否则生成新图片。
-            size(string): 图像尺寸，如 1024x1024、1792x1024、1024x1792。默认为 1024x1024。
+            size(string): 可选。图像尺寸，如 1024x1024、1536x1024、1024x1536；默认使用插件设置中的 default_size。
+            provider(string): 可选。指定使用的图像提供商，可选 openai、gemini、grok；若该提供商未完整配置则回退到 default_provider。
         """
         images_info = f"{len(images)} images" if images else "None"
+        resolved_size = size or self._general_config("default_size", "1024x1024")
+        resolved_provider = self._resolve_tool_provider(provider)
         logger.info(
-            f"generate_image_tool called: prompt={prompt}, images={images_info}, size={size}"
+            "generate_image_tool called: prompt=%s, images=%s, size=%s, provider=%s, requested_provider=%s",
+            prompt,
+            images_info,
+            resolved_size,
+            resolved_provider,
+            provider,
         )
 
-        # Use default provider from config
-        provider = self._general_config("default_provider", "openai")
-
-        if not self._is_provider_configured(provider):
-            if provider == "gemini" and self._gemini_config("vertex_enabled", False):
+        if not self._is_provider_configured(resolved_provider):
+            if resolved_provider == "gemini" and self._gemini_config(
+                "vertex_enabled", False
+            ):
                 return "错误：未配置可用的 Vertex AI 凭证或项目 ID，请检查上传的 JSON 文件和 Vertex 配置。"
-            return f"错误：未配置 {provider} 的 API 密钥，请在插件设置中配置。"
+            return f"错误：未配置 {resolved_provider} 的 API 密钥，请在插件设置中配置。"
 
         try:
-            adapter = self._get_adapter(provider)
+            adapter = self._get_adapter(resolved_provider)
         except ValueError as e:
             return f"错误：{str(e)}"
 
         try:
-            model = self._provider_model(provider)
-            aspect_ratio = convert_size_to_aspect_ratio(size)
+            model = self._provider_model(resolved_provider)
+            aspect_ratio = convert_size_to_aspect_ratio(resolved_size)
             grok_aspect_ratio = aspect_ratio
-            grok_resolution = convert_size_to_resolution(size)
+            grok_resolution = convert_size_to_resolution(resolved_size)
             openai_quality, openai_background, openai_output_format = (
                 self._openai_output_options()
             )
@@ -1637,25 +1663,27 @@ class Main(star.Star):
             if is_editing:
                 # Image-to-image editing - pass all processed images
                 logger.info(
-                    f"Performing image-to-image editing for provider {provider} with {len(processed_images)} image(s)"
+                    "Performing image-to-image editing for provider %s with %d image(s)",
+                    resolved_provider,
+                    len(processed_images),
                 )
 
-                if provider == "grok":
+                if resolved_provider == "grok":
                     result_urls = await adapter.edit(
                         prompt,
                         images=processed_images,
                         model=model,
                         aspect_ratio=grok_aspect_ratio,
                     )
-                elif provider == "gemini":
+                elif resolved_provider == "gemini":
                     result_urls = await adapter.edit(
-                        prompt, images=processed_images, size=size, model=model
+                        prompt, images=processed_images, size=resolved_size, model=model
                     )
                 else:  # openai
                     result_urls = await adapter.edit(
                         prompt,
                         images=processed_images,
-                        size=size,
+                        size=resolved_size,
                         quality=openai_quality,
                         background=openai_background,
                         output_format=openai_output_format,
@@ -1664,12 +1692,15 @@ class Main(star.Star):
             else:
                 # Text-to-image generation
                 logger.info(
-                    f"Performing text-to-image generation for provider {provider}"
+                    "Performing text-to-image generation for provider %s",
+                    resolved_provider,
                 )
 
-                if provider == "gemini":
-                    result_urls = await adapter.generate(prompt, size, model=model)
-                elif provider == "grok":
+                if resolved_provider == "gemini":
+                    result_urls = await adapter.generate(
+                        prompt, resolved_size, model=model
+                    )
+                elif resolved_provider == "grok":
                     result_urls = await adapter.generate(
                         prompt,
                         model=model,
@@ -1679,7 +1710,7 @@ class Main(star.Star):
                 else:  # openai
                     result_urls = await adapter.generate(
                         prompt,
-                        size,
+                        resolved_size,
                         quality=openai_quality,
                         background=openai_background,
                         output_format=openai_output_format,
