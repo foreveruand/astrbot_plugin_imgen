@@ -6,6 +6,7 @@
 
 - **/task**: 基于指定人格的无记忆对话。
 - **/img**: 开启会话式图像生成，支持文本描述和多张图片输入。
+- **Telegram Inline**: 在 Telegram 中输入 `@botname <描述>` 后，可选择“图像生成助手”并基于 query 直接生成一张图片返回到内联消息。
 - **图像生成**: 支持 OpenAI, Gemini, Grok 模型。
 - **Vertex AI**: 支持 Google Cloud Vertex AI 认证。
 - **多轮编辑**: 支持在当前会话中基于用户显式提供的图片进行编辑。
@@ -100,6 +101,19 @@
 - `provider` (可选): 指定绘图提供商，可选 `openai`、`gemini`、`grok`
 
 工具调用默认使用设置中的 `default_provider`。如果 LLM 显式传入 `provider`，插件会优先尝试该渠道；若该渠道缺少必要配置，则自动回退到 `default_provider`。
+
+### 5. Telegram Inline 绘图
+当 AstrBot 的 Telegram 平台启用了 inline 模式后，可以直接在任意聊天中使用：
+```
+@botname 夕阳下的机械城市
+```
+
+然后在候选项中选择“图像生成助手”。插件会读取当前 inline query，调用默认图像提供商绘制，并把生成结果直接回填为图片消息。
+
+注意：
+- 该模式当前按一次 query 返回 1 张图片。
+- 返回图片依赖 Telegram inline 消息编辑能力；失败时会回退为错误文本。
+- 使用的提供商、模型、默认分辨率和默认人格，均沿用本插件现有配置。
 
 ## 支持的 API 服务
 

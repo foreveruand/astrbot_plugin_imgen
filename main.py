@@ -1050,6 +1050,85 @@ class Main(star.Star):
         )
         return default_provider
 
+    async def _apply_default_persona_prompt(self, prompt: str) -> str:
+        """Prefix the prompt with the configured default persona when available."""
+        default_persona = self._general_config("default_persona", "")
+        if not default_persona:
+            return prompt
+
+        persona = await self.context.persona_manager.get_persona(default_persona)
+        if not persona or not getattr(persona, "system_prompt", ""):
+            return prompt
+
+        system_prompt = str(persona.system_prompt).strip()
+        if not system_prompt:
+            return prompt
+        return f"{system_prompt}\n\n{prompt}" if prompt else system_prompt
+
+    async def _handle_inline_image_generation(self, event: AstrMessageEvent):
+        """Generate a single image for a chosen Telegram inline query."""
+        prompt = str(getattr(event, "query", "") or event.message_str or "").strip()
+        if not prompt:
+            yield event.plain_result("请先输入绘图描述，再选择图像生成助手。")
+            return
+
+        provider = self._general_config("default_provider", "openai")
+        if not self._is_provider_configured(provider):
+            yield event.plain_result(ERROR_MESSAGES["no_api_key"])
+            return
+
+        try:
+            adapter = self._get_adapter(provider)
+        except ValueError:
+            yield event.plain_result(
+                ERROR_MESSAGES["invalid_provider"].format(provider=provider)
+            )
+            return
+
+        prompt = await self._apply_default_persona_prompt(prompt)
+
+        try:
+            image_size = self._general_config("default_size", "1024x1024")
+            model = self._provider_model(provider)
+            aspect_ratio = convert_size_to_aspect_ratio(image_size)
+            grok_resolution = convert_size_to_resolution(image_size)
+            openai_quality, openai_background, openai_output_format = (
+                self._openai_output_options()
+            )
+
+            if provider == "gemini":
+                result_urls = await adapter.generate(prompt, image_size, model=model)
+            elif provider == "grok":
+                result_urls = await adapter.generate(
+                    prompt,
+                    model=model,
+                    aspect_ratio=aspect_ratio,
+                    resolution=grok_resolution,
+                    n=1,
+                )
+            else:
+                result_urls = await adapter.generate(
+                    prompt,
+                    image_size,
+                    n=1,
+                    quality=openai_quality,
+                    background=openai_background,
+                    output_format=openai_output_format,
+                    model=model,
+                )
+
+            if not result_urls:
+                yield event.plain_result("图像生成失败：未返回结果。")
+                return
+
+            await self._send_image_output(event, result_urls[0])
+        except Exception as e:
+            safe_error = _sanitize_error_text(str(e))
+            logger.error(f"Inline image generation error: {safe_error}")
+            yield event.plain_result(
+                ERROR_MESSAGES["api_error"].format(error=safe_error)
+            )
+
     async def _send_image_output(
         self, event: AstrMessageEvent, image_data: str, mime_type: str = "image/png"
     ) -> None:
@@ -1168,16 +1247,7 @@ class Main(star.Star):
             )
             return False
 
-        # Add persona prompt if configured
-        default_persona = self._general_config("default_persona", "")
-        if default_persona:
-            persona = await self.context.persona_manager.get_persona(default_persona)
-            if persona and hasattr(persona, "system_prompt") and persona.system_prompt:
-                prompt = (
-                    f"{persona.system_prompt}\n\n{prompt}"
-                    if prompt
-                    else persona.system_prompt
-                )
+        prompt = await self._apply_default_persona_prompt(prompt)
 
         try:
             image_size = size or self._general_config("default_size", "1024x1024")
@@ -1363,6 +1433,26 @@ class Main(star.Star):
         except Exception as e:
             logger.error(f"Task command error: {e}")
             yield event.plain_result(f"对话失败: {e}")
+
+    @filter.inline_query()
+    async def inline_query_entry(self, event: AstrMessageEvent):
+        """Expose this plugin as a Telegram inline-query option.
+
+        The event bus only needs the handler registration so it can surface a
+        plugin-specific choice in the inline result picker. Actual image
+        generation runs after the user chooses the plugin result.
+        """
+        if not hasattr(event, "inline_message_id"):
+            return
+
+        async for result in self._handle_inline_image_generation(event):
+            yield result
+
+    @filter.chosen_inline_result()
+    async def chosen_inline_generate(self, event: AstrMessageEvent):
+        """Fallback chosen-inline handler for non-targeted Telegram routes."""
+        async for result in self._handle_inline_image_generation(event):
+            yield result
 
     @filter.command("img")
     async def img_cmd(self, event: AstrMessageEvent, initial_prompt: str = ""):

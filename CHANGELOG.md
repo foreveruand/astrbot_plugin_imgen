@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.3.13] - 2026-05-17
+
+### Added
+
+- **Telegram Inline Image Generation**:
+  - Register the plugin as a Telegram inline-query option so it appears in the inline result picker.
+  - Add chosen-inline handling that reads the selected query, generates an image with the plugin's default provider, and returns the result as an inline image message.
+  - Reuse the configured default persona prompt for inline image generation so inline results follow the same style guidance as `/img`.
+
 ## [1.3.12] - 2026-05-05
 
 ### Changed
