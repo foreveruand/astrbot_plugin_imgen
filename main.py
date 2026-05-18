@@ -1442,15 +1442,9 @@ class Main(star.Star):
         plugin-specific choice in the inline result picker. Actual image
         generation runs after the user chooses the plugin result.
         """
-        if not hasattr(event, "inline_message_id"):
+        if not hasattr(event, "inline_message_id") or not hasattr(event, "result_id"):
             return
 
-        async for result in self._handle_inline_image_generation(event):
-            yield result
-
-    @filter.chosen_inline_result()
-    async def chosen_inline_generate(self, event: AstrMessageEvent):
-        """Fallback chosen-inline handler for non-targeted Telegram routes."""
         async for result in self._handle_inline_image_generation(event):
             yield result
 

@@ -2,6 +2,30 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.3.16] - 2026-05-18
+
+### Fixed
+
+- **Telegram Inline Selection Guard**:
+  - Require a chosen inline result ID before starting inline image generation.
+  - Prevent image generation while the user is only typing an inline query and has not tapped any option yet.
+
+## [1.3.15] - 2026-05-18
+
+### Changed
+
+- **Telegram Inline Handler Simplification**:
+  - Remove the generic chosen-inline fallback and use only AstrBot's targeted plugin inline flow.
+  - Drop the extra inline registry import and match the keyword reply plugin's filtering model more closely.
+
+## [1.3.14] - 2026-05-18
+
+### Fixed
+
+- **Telegram Inline Routing**:
+  - Restrict chosen-inline image generation to inline results explicitly registered for `astrbot_plugin_imgen`.
+  - Stop the plugin from replying to unrelated Telegram inline selections such as the generic "插件命令" command option.
+
 ## [1.3.13] - 2026-05-17
 
 ### Added
