@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.3.17] - 2026-05-24
+
+### Fixed
+
+- **`/img` Session Blocking During Generation**:
+  - Move `/generate` image requests to a background task so the session waiter exits immediately after submission.
+  - Keep AstrBot responsive to other commands in the same chat while the provider request is still running.
+  - Add `/cancel` support for cancelling an in-flight background image generation task.
+
 ## [1.3.16] - 2026-05-18
 
 ### Fixed

@@ -2,6 +2,7 @@
 AstrBot Image Generation Plugin - Persona-based chat and image generation.
 """
 
+import asyncio
 import base64
 import json
 import os
@@ -945,6 +946,7 @@ class Main(star.Star):
 
     # Track active image generation sessions by chat_id
     ACTIVE_SESSIONS: dict[str, dict] = {}  # chat_id -> session data
+    RUNNING_GENERATIONS: dict[str, asyncio.Task[None]] = {}  # chat_id -> task
 
     def __init__(self, context: star.Context, config: AstrBotConfig) -> None:
         super().__init__(context, config)
@@ -957,6 +959,8 @@ class Main(star.Star):
 
     async def terminate(self) -> None:
         """Called when the plugin is disabled or reloaded."""
+        for task in list(self.RUNNING_GENERATIONS.values()):
+            task.cancel()
         logger.info("Image Generation plugin terminated")
 
     def _get_plugin_data_dir(self) -> Path:
@@ -1215,6 +1219,57 @@ class Main(star.Star):
         await self.delete_kv_data(key)
         logger.debug(f"Cleared last image for chat {chat_id}")
 
+    async def _run_generation_task(
+        self,
+        event: AstrMessageEvent,
+        chat_id: str,
+        session_data: dict,
+        *,
+        size: str | None = None,
+        n: int = 1,
+    ) -> None:
+        """Run generation in background so the session waiter can exit immediately."""
+        try:
+            await self._do_generate(event, chat_id, session_data, size=size, n=n)
+        except asyncio.CancelledError:
+            logger.info("Cancelled image generation task for chat %s", chat_id)
+            raise
+        finally:
+            current_task = asyncio.current_task()
+            if self.RUNNING_GENERATIONS.get(chat_id) is current_task:
+                self.RUNNING_GENERATIONS.pop(chat_id, None)
+
+    def _start_generation_task(
+        self,
+        event: AstrMessageEvent,
+        chat_id: str,
+        session_data: dict,
+        *,
+        size: str | None = None,
+        n: int = 1,
+    ) -> bool:
+        """Start a background generation task if the chat is currently idle."""
+        running_task = self.RUNNING_GENERATIONS.get(chat_id)
+        if running_task and not running_task.done():
+            return False
+
+        session_snapshot = {
+            "id": session_data.get("id"),
+            "text": session_data.get("text", ""),
+            "images": list(session_data.get("images", [])),
+        }
+        self.RUNNING_GENERATIONS[chat_id] = asyncio.create_task(
+            self._run_generation_task(
+                event,
+                chat_id,
+                session_snapshot,
+                size=size,
+                n=n,
+            ),
+            name=f"imgen-generate-{chat_id}",
+        )
+        return True
+
     async def _do_generate(
         self,
         event: AstrMessageEvent,
@@ -1455,6 +1510,11 @@ class Main(star.Star):
             event.get_group_id() if event.get_group_id() else event.unified_msg_origin
         )
 
+        running_task = self.RUNNING_GENERATIONS.get(chat_id)
+        if running_task and not running_task.done():
+            yield event.plain_result(ERROR_MESSAGES["session_conflict"])
+            return
+
         # Check for existing session
         if chat_id in self.ACTIVE_SESSIONS:
             yield event.plain_result(
@@ -1505,11 +1565,27 @@ class Main(star.Star):
                     elif "x" in part:  # Size format like "1024x1024"
                         gen_size = part
 
-                await self._do_generate(
-                    event, chat_id, session_data, size=gen_size, n=gen_n
+                started = self._start_generation_task(
+                    event,
+                    chat_id,
+                    session_data,
+                    size=gen_size,
+                    n=gen_n,
                 )
+                if not started:
+                    await event.send(
+                        event.plain_result(ERROR_MESSAGES["session_conflict"])
+                    )
+                    controller.keep(timeout=session_timeout)
+                    return
+
                 if chat_id in self.ACTIVE_SESSIONS:
                     del self.ACTIVE_SESSIONS[chat_id]
+                await event.send(
+                    event.plain_result(
+                        "已开始生成。当前绘图会话已关闭，机器人会继续响应其他命令；如需中止本次请求，请发送 /cancel。"
+                    )
+                )
                 controller.stop()
                 return
 
@@ -1578,6 +1654,13 @@ class Main(star.Star):
         chat_id = (
             event.get_group_id() if event.get_group_id() else event.unified_msg_origin
         )
+        running_task = self.RUNNING_GENERATIONS.get(chat_id)
+        if running_task and not running_task.done():
+            running_task.cancel()
+            self.RUNNING_GENERATIONS.pop(chat_id, None)
+            yield event.plain_result("已取消当前绘图任务。")
+            return
+
         # Clear KV storage for multi-turn editing
         await self._clear_last_image(chat_id)
         if chat_id in self.ACTIVE_SESSIONS:
