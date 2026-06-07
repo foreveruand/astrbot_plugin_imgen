@@ -19,7 +19,11 @@ from google.genai import types
 import astrbot.api.message_components as Comp
 from astrbot.api import AstrBotConfig, logger, star
 from astrbot.api.event import AstrMessageEvent, filter
-from astrbot.core.utils.astrbot_path import get_astrbot_plugin_data_path
+from astrbot.core.skills.skill_manager import SkillManager
+from astrbot.core.utils.astrbot_path import (
+    get_astrbot_plugin_data_path,
+    get_astrbot_skills_path,
+)
 from astrbot.core.utils.session_waiter import (
     SessionController,
     SessionFilter,
@@ -30,6 +34,10 @@ from astrbot.core.utils.session_waiter import (
 ALLOWED_MIME_TYPES = {"image/png", "image/jpeg", "image/webp", "image/gif"}
 MAX_IMAGE_SIZE = 20 * 1024 * 1024  # 20MB
 MAX_ERROR_TEXT_LENGTH = 220
+PLUGIN_NAME = "astrbot_plugin_imgen"
+PLUGIN_DIR = Path(__file__).resolve().parent
+SKILL_NAME = "imgen_tool_prompt_expansion"
+SKILL_SOURCE_PATH = PLUGIN_DIR / "skills" / SKILL_NAME / "SKILL.md"
 
 
 def detect_mime_type(data: bytes) -> str:
@@ -955,6 +963,10 @@ class Main(star.Star):
 
     async def initialize(self) -> None:
         """Called when the plugin is activated."""
+        try:
+            self._install_or_update_skill()
+        except Exception as exc:
+            logger.warning("[imgen] Failed to install skill: %s", exc, exc_info=True)
         logger.info("Image Generation plugin initialized")
 
     async def terminate(self) -> None:
@@ -965,7 +977,27 @@ class Main(star.Star):
 
     def _get_plugin_data_dir(self) -> Path:
         """Return the plugin's persistent data directory."""
-        return Path(get_astrbot_plugin_data_path()) / "astrbot_plugin_imgen"
+        return Path(get_astrbot_plugin_data_path()) / PLUGIN_NAME
+
+    def _install_or_update_skill(self) -> None:
+        if not SKILL_SOURCE_PATH.is_file():
+            logger.warning("[imgen] Skill source file not found: %s", SKILL_SOURCE_PATH)
+            return
+
+        skill_dir = Path(get_astrbot_skills_path()) / SKILL_NAME
+        skill_dir.mkdir(parents=True, exist_ok=True)
+        target_path = skill_dir / "SKILL.md"
+        skill_content = SKILL_SOURCE_PATH.read_text(encoding="utf-8")
+        current_content = ""
+        if target_path.exists():
+            current_content = target_path.read_text(encoding="utf-8")
+
+        if current_content != skill_content:
+            target_path.write_text(skill_content, encoding="utf-8")
+
+        skill_manager = SkillManager()
+        skill_manager.set_skill_active(SKILL_NAME, True)
+        logger.info("[imgen] Installed skill: %s", SKILL_NAME)
 
     def _resolve_plugin_data_file(self, file_path: str | None) -> str | None:
         """Resolve a plugin-uploaded file path against astrbot_plugin_data_dir."""
@@ -1767,7 +1799,8 @@ class Main(star.Star):
         images: list | None = None,
         size: str | None = None,
         provider: str | None = None,
-    ) -> str:
+        model: str | None = None,
+    ) -> str | mcp.types.CallToolResult:
         """生成或编辑图像。当用户请求生成图片、画图、创建图像或编辑图片时使用此工具。
 
         Args:
@@ -1775,17 +1808,27 @@ class Main(star.Star):
             images(array[string]): 可选。要编辑的图片列表，支持URL、本地路径、base64。如果提供，将对图片进行编辑；否则生成新图片。
             size(string): 可选。图像尺寸，如 1024x1024、1536x1024、1024x1536；默认使用插件设置中的 default_size。
             provider(string): 可选。指定使用的图像提供商，可选 openai、gemini、grok；若该提供商未完整配置则回退到 default_provider。
+            model(string): 可选。覆盖本次调用使用的模型；未传入时使用所选提供商的插件配置模型。
         """
         images_info = f"{len(images)} images" if images else "None"
         resolved_size = size or self._general_config("default_size", "1024x1024")
         resolved_provider = self._resolve_tool_provider(provider)
+        requested_provider = (provider or "").strip().lower()
+        requested_model = (model or "").strip()
+        if requested_model and (
+            not requested_provider or requested_provider == resolved_provider
+        ):
+            resolved_model = requested_model
+        else:
+            resolved_model = self._provider_model(resolved_provider)
         logger.info(
-            "generate_image_tool called: prompt=%s, images=%s, size=%s, provider=%s, requested_provider=%s",
+            "generate_image_tool called: prompt=%s, images=%s, size=%s, provider=%s, requested_provider=%s, model=%s",
             prompt,
             images_info,
             resolved_size,
             resolved_provider,
             provider,
+            resolved_model,
         )
 
         if not self._is_provider_configured(resolved_provider):
@@ -1801,7 +1844,6 @@ class Main(star.Star):
             return f"错误：{str(e)}"
 
         try:
-            model = self._provider_model(resolved_provider)
             aspect_ratio = convert_size_to_aspect_ratio(resolved_size)
             grok_aspect_ratio = aspect_ratio
             grok_resolution = convert_size_to_resolution(resolved_size)
@@ -1839,12 +1881,15 @@ class Main(star.Star):
                     result_urls = await adapter.edit(
                         prompt,
                         images=processed_images,
-                        model=model,
+                        model=resolved_model,
                         aspect_ratio=grok_aspect_ratio,
                     )
                 elif resolved_provider == "gemini":
                     result_urls = await adapter.edit(
-                        prompt, images=processed_images, size=resolved_size, model=model
+                        prompt,
+                        images=processed_images,
+                        size=resolved_size,
+                        model=resolved_model,
                     )
                 else:  # openai
                     result_urls = await adapter.edit(
@@ -1854,7 +1899,7 @@ class Main(star.Star):
                         quality=openai_quality,
                         background=openai_background,
                         output_format=openai_output_format,
-                        model=model,
+                        model=resolved_model,
                     )
             else:
                 # Text-to-image generation
@@ -1865,12 +1910,12 @@ class Main(star.Star):
 
                 if resolved_provider == "gemini":
                     result_urls = await adapter.generate(
-                        prompt, resolved_size, model=model
+                        prompt, resolved_size, model=resolved_model
                     )
                 elif resolved_provider == "grok":
                     result_urls = await adapter.generate(
                         prompt,
-                        model=model,
+                        model=resolved_model,
                         aspect_ratio=grok_aspect_ratio,
                         resolution=grok_resolution,
                     )
@@ -1881,7 +1926,7 @@ class Main(star.Star):
                         quality=openai_quality,
                         background=openai_background,
                         output_format=openai_output_format,
-                        model=model,
+                        model=resolved_model,
                     )
 
             if not result_urls:

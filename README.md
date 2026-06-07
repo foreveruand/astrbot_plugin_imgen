@@ -11,6 +11,7 @@
 - **Vertex AI**: 支持 Google Cloud Vertex AI 认证。
 - **多轮编辑**: 支持在当前会话中基于用户显式提供的图片进行编辑。
 - **LLM 工具**: 可作为 AI 工具调用，让 AI 在对话中生成图像。
+- **LLM Skill 注入**: 插件启用时会自动安装并激活提示词扩展 skill，引导 AI 先扩展用户绘图需求，再调用图像生成工具。
 - **会话管理**: 支持 5 分钟自动超时，支持 `/generate` 生成，`/clear` 清除记录，或 `/cancel` 取消。
 
 ## 安装
@@ -100,8 +101,10 @@
   - 纯 Base64 字符串
 - `size` (可选): 图像尺寸；未传入时默认使用插件设置中的 `default_size`
 - `provider` (可选): 指定绘图提供商，可选 `openai`、`gemini`、`grok`
+- `model` (可选): 覆盖本次工具调用使用的模型；未传入时使用对应提供商配置中的 `model`
 
 工具调用默认使用设置中的 `default_provider`。如果 LLM 显式传入 `provider`，插件会优先尝试该渠道；若该渠道缺少必要配置，则自动回退到 `default_provider`。
+插件启用后会自动注入 `imgen_tool_prompt_expansion` skill，引导 LLM 将用户的简短需求扩展为包含主体、构图、风格、环境、光照和编辑约束的完整提示词后再调用工具，并在生成成功后调用 `send_message_to_user` 把图片发送给用户。该 skill 会禁止 LLM 直接传入 `provider` 和 `model`；如用户想改用指定提供商或模型，LLM 应先追问确认，并通过插件配置修改默认值。
 
 ### 5. Telegram Inline 绘图
 当 AstrBot 的 Telegram 平台启用了 inline 模式后，可以直接在任意聊天中使用：

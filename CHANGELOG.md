@@ -2,6 +2,26 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.3.19] - 2026-06-07
+
+### Changed
+
+- **Image Tool Skill Guardrails**:
+  - Instruct the LLM to send generated images to users with `send_message_to_user` after `generate_image` succeeds.
+  - Forbid the skill from passing `provider` or `model` to `generate_image`; provider/model changes must be clarified with the user and applied through plugin configuration.
+  - Add a provider model-name reference list for clarifying incomplete user model requests.
+
+## [1.3.18] - 2026-06-07
+
+### Added
+
+- **LLM Tool Prompt Expansion Skill**:
+  - Install and activate an `imgen_tool_prompt_expansion` skill on plugin initialization.
+  - Guide the LLM to expand user image requests into detailed visual prompts before calling `generate_image`.
+
+- **`generate_image` Tool Model Override**:
+  - Add an optional `model` argument to the LLM tool so the LLM can override the configured provider model per call.
+
 ## [1.3.17] - 2026-05-24
 
 ### Fixed
